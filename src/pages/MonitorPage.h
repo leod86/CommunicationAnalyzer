@@ -5,7 +5,7 @@
 #include <QDateTime>
 #include <QList>
 #include <QStringList>
-#include <QWidget>
+#include "ElaScrollPage.h"
 
 class ElaComboBox;
 class ElaCheckBox;
@@ -17,11 +17,12 @@ class ElaToolBar;
 class ElaToggleSwitch;
 class ElaToolButton;
 class QFile;
+class QSplitter;
 class QTimer;
 class QValidator;
 class TrafficTextEdit;
 
-class MonitorPage final : public QWidget
+class MonitorPage final : public ElaScrollPage
 {
     Q_OBJECT
 
@@ -171,6 +172,7 @@ private:
     ElaPushButton* _multiSendToggleButton{nullptr};
     ElaCheckBox* _continuousSendCheckBox{nullptr};
     ElaLineEdit* _sendIntervalEdit{nullptr};
+    QSplitter* _contentSplitter{nullptr};
     QWidget* _multiSendPanel{nullptr};
     ElaText* _statusText{nullptr};
     ElaText* _transferText{nullptr};

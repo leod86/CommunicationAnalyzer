@@ -39,6 +39,8 @@ qt_add_executable(CommunicationAnalyzer
     src/communication/SerialController.h
     src/pages/MonitorPage.cpp
     src/pages/MonitorPage.h
+    src/pages/SettingPage.cpp
+    src/pages/SettingPage.h
     src/widgets/TrafficTextEdit.cpp
     src/widgets/TrafficTextEdit.h
 )

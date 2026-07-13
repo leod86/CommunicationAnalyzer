@@ -30,6 +30,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QShowEvent>
+#include <QSplitter>
 #include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextDocument>
@@ -39,17 +40,6 @@
 
 namespace
 {
-class ResponsivePageScrollArea final : public ElaScrollArea
-{
-public:
-    // 创建内容宽度跟随视口的页面滚动区域。
-    explicit ResponsivePageScrollArea(QWidget* parent = nullptr);
-
-protected:
-    // 在视口尺寸变化时同步页面内容宽度。
-    void resizeEvent(QResizeEvent* event) override;
-};
-
 // 响应式控件位置，分别记录宽布局和紧凑布局中的坐标。
 struct ResponsiveItemPosition
 {
@@ -83,32 +73,6 @@ private:
     QList<ResponsiveItemPosition> _items;
     bool _compact{false};
 };
-
-/*****************************************************
-函数名称：ResponsivePageScrollArea::ResponsivePageScrollArea(QWidget* parent)
-入口参数：parent为父窗口
-出口参数：无
-函数功能：创建内容宽度跟随视口的页面滚动区域
-*****************************************************/
-ResponsivePageScrollArea::ResponsivePageScrollArea(QWidget* parent)
-    : ElaScrollArea(parent)
-{
-}
-
-/*****************************************************
-函数名称：void ResponsivePageScrollArea::resizeEvent(QResizeEvent* event)
-入口参数：event为窗口尺寸变化事件
-出口参数：无
-函数功能：同步内容宽度以触发内部流式布局重新换行
-*****************************************************/
-void ResponsivePageScrollArea::resizeEvent(QResizeEvent* event)
-{
-    ElaScrollArea::resizeEvent(event);
-    if (widget())
-    {
-        widget()->setFixedWidth(viewport()->width());
-    }
-}
 
 /*****************************************************
 函数名称：ResponsiveRowWidget::ResponsiveRowWidget(QWidget* parent)
@@ -271,7 +235,7 @@ void ResponsiveRowWidget::updateResponsiveLayout()
 函数功能：初始化通讯监视页面
 *****************************************************/
 MonitorPage::MonitorPage(QWidget* parent)
-    : QWidget(parent)
+    : ElaScrollPage(parent)
 {
     buildUi();
 }
@@ -336,19 +300,15 @@ int MonitorPage::sendInterval() const
 *****************************************************/
 void MonitorPage::buildUi()
 {
-    auto* rootLayout = new QVBoxLayout(this);
-    rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(0);
+    setWindowTitle(QStringLiteral("串口监视"));
+    setTitleVisible(false);
+    setContentsMargins(0, 0, 0, 0);
 
     // 串口配置工具栏由主窗口放置在页面上方。
     _serialToolBar = buildSerialToolBar();
 
-    auto* pageScrollArea = new ResponsivePageScrollArea(this);
-    pageScrollArea->setWidgetResizable(true);
-    pageScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    pageScrollArea->setFrameShape(QFrame::NoFrame);
-
-    auto* pageContent = new QWidget(pageScrollArea);
+    auto* pageContent = new QWidget(this);
+    pageContent->setWindowTitle(QStringLiteral("串口监视"));
     pageContent->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto* pageLayout = new QVBoxLayout(pageContent);
     pageLayout->setSizeConstraint(QLayout::SetMinimumSize);
@@ -451,7 +411,7 @@ void MonitorPage::buildUi()
     _trafficView->document()->setMaximumBlockCount(20000);
 
     auto* transmitLayout = new QGridLayout();
-    transmitLayout->setContentsMargins(0, 0, 0, 0);
+    transmitLayout->setContentsMargins(12, 0, 0, 0);
     transmitLayout->setHorizontalSpacing(8);
     transmitLayout->setSpacing(8);
 
@@ -539,7 +499,7 @@ void MonitorPage::buildUi()
     transmitLayout->setColumnStretch(1, 1);
 
     auto* statusLayout = new QHBoxLayout();
-    statusLayout->setContentsMargins(4, 0, 4, 0);
+    statusLayout->setContentsMargins(12, 0, 4, 0);
     _statusText = new ElaText(QStringLiteral("未连接"), this);
     _statusText->setTextPixelSize(12);
     _transferText = new ElaText(QStringLiteral("↓ 0 B/s  0 B    ↑ 0 B/s  0 B"), this);
@@ -561,15 +521,16 @@ void MonitorPage::buildUi()
     _multiSendPanel = buildMultiSendPanel();
     _multiSendPanel->setVisible(false);
 
-    auto* contentLayout = new QHBoxLayout();
-    contentLayout->setContentsMargins(0, 0, 0, 0);
-    contentLayout->setSpacing(8);
-    contentLayout->addWidget(monitorWidget, 1);
-    contentLayout->addWidget(_multiSendPanel);
-    pageLayout->addLayout(contentLayout, 1);
-    pageScrollArea->setWidget(pageContent);
-    pageContent->setFixedWidth(pageScrollArea->viewport()->width());
-    rootLayout->addWidget(pageScrollArea);
+    _contentSplitter = new QSplitter(Qt::Horizontal, this);
+    _contentSplitter->setChildrenCollapsible(false);
+    _contentSplitter->setHandleWidth(8);
+    _contentSplitter->addWidget(monitorWidget);
+    _contentSplitter->addWidget(_multiSendPanel);
+    _contentSplitter->setStretchFactor(0, 1);
+    _contentSplitter->setStretchFactor(1, 0);
+    _contentSplitter->setSizes({820, 320});
+    pageLayout->addWidget(_contentSplitter, 1);
+    addCentralWidget(pageContent, true, false, 0);
 
     // 显示开关统一触发历史记录重绘。
     const QList<ElaToolButton*> displayButtons = {
@@ -599,6 +560,9 @@ void MonitorPage::buildUi()
     });
     connect(_continuousSendCheckBox, &ElaCheckBox::toggled,
             this, &MonitorPage::handleContinuousSendToggled);
+    connect(_contentSplitter, &QSplitter::splitterMoved, this, [this](int, int) {
+        saveSettings();
+    });
 
     _rateTimer = new QTimer(this);
     _rateTimer->setInterval(1000);
@@ -651,7 +615,7 @@ ElaToolBar* MonitorPage::buildSerialToolBar()
     _dataBitsComboBox->addItem(QStringLiteral("7"), static_cast<int>(QSerialPort::Data7));
     _dataBitsComboBox->addItem(QStringLiteral("8"), static_cast<int>(QSerialPort::Data8));
     _dataBitsComboBox->setCurrentIndex(3);
-    _dataBitsComboBox->setFixedWidth(56);
+    _dataBitsComboBox->setFixedWidth(72);
     _dataBitsComboBox->setToolTip(QStringLiteral("数据位：5、6、7或8位"));
 
     _parityComboBox = new ElaComboBox(toolBar);
@@ -707,8 +671,8 @@ QWidget* MonitorPage::buildMultiSendPanel()
 {
     auto* panel = new QFrame(this);
     panel->setFrameShape(QFrame::StyledPanel);
-    panel->setMinimumWidth(260);
-    panel->setMaximumWidth(360);
+    panel->setMinimumWidth(220);
+    panel->setMaximumWidth(QWIDGETSIZE_MAX);
 
     auto* layout = new QVBoxLayout(panel);
     layout->setContentsMargins(10, 10, 10, 10);
@@ -738,7 +702,7 @@ QWidget* MonitorPage::buildMultiSendPanel()
         item.modeComboBox = new ElaComboBox(listWidget);
         item.modeComboBox->addItem(QStringLiteral("ABC"), 0);
         item.modeComboBox->addItem(QStringLiteral("HEX"), 1);
-        item.modeComboBox->setFixedWidth(70);
+        item.modeComboBox->setFixedWidth(88);
 
         item.contentEdit = new ElaLineEdit(listWidget);
         item.contentEdit->setPlaceholderText(QStringLiteral("字符串 %1").arg(index + 1));
@@ -841,6 +805,11 @@ void MonitorPage::loadSettings()
 
     _multiSendToggleButton->setChecked(
         settings.value(QStringLiteral("quickSend/expanded"), false).toBool());
+    const QByteArray splitterState = settings.value(QStringLiteral("layout/contentSplitter")).toByteArray();
+    if (!splitterState.isEmpty() && _contentSplitter)
+    {
+        _contentSplitter->restoreState(splitterState);
+    }
 }
 
 /*****************************************************
@@ -878,6 +847,10 @@ void MonitorPage::saveSettings()
     settings.setValue(QStringLiteral("transmit/checksum"), _checksumComboBox->currentData());
     settings.setValue(QStringLiteral("transmit/suffix"), _suffixComboBox->currentData());
     settings.setValue(QStringLiteral("quickSend/expanded"), _multiSendToggleButton->isChecked());
+    if (_contentSplitter)
+    {
+        settings.setValue(QStringLiteral("layout/contentSplitter"), _contentSplitter->saveState());
+    }
     for (int index = 0; index < _quickSendItems.size(); ++index)
     {
         const QuickSendItem& item = _quickSendItems.at(index);
@@ -1715,6 +1688,8 @@ void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
     {
         textContent.replace(QChar(0x1B), QStringLiteral("\\x1B"));
     }
+    // Windows文本剪贴板以空字符结尾，直接保留0x00会导致全选复制在此处截断。
+    textContent.replace(QChar::Null, QStringLiteral("\\x00"));
 
     QTextCharFormat defaultFormat;
     defaultFormat.setForeground(_trafficView->palette().color(QPalette::Text));

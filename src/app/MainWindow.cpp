@@ -3,6 +3,7 @@
 #include "communication/SerialController.h"
 #include "ElaToolBar.h"
 #include "pages/MonitorPage.h"
+#include "pages/SettingPage.h"
 
 /*****************************************************
 函数名称：MainWindow::MainWindow(QWidget* parent)
@@ -13,6 +14,7 @@
 MainWindow::MainWindow(QWidget* parent)
     : ElaWindow(parent)
     , _monitorPage(new MonitorPage(this))
+    , _settingPage(new SettingPage(this))
     , _serialController(new SerialController(this))
 {
     // 初始化窗口及业务信号连接。
@@ -46,13 +48,16 @@ void MainWindow::initializeWindow()
     setMinimumSize(520, 360);
     setWindowTitle(QStringLiteral("通讯分析器"));
     setUserInfoCardVisible(false);
-    setNavigationBarDisplayMode(ElaNavigationType::Minimal);
+    setNavigationBarDisplayMode(ElaNavigationType::Auto);
 
     // 将串口配置固定在窗口顶部，避免占用通讯页面的垂直空间。
     addToolBar(Qt::TopToolBarArea, _monitorPage->serialToolBar());
 
-    // 注册通讯监视导航页面。
-    addPageNode(QStringLiteral("Connection"), _monitorPage, ElaIconType::Table);
+    // 注册通讯监视页面和底部设置页面。
+    addPageNode(QStringLiteral("串口监视"), _monitorPage, ElaIconType::Table);
+    _monitorPageKey = _monitorPage->property("ElaPageKey").toString();
+    addFooterNode(QStringLiteral("设置"), _settingPage, _settingPageKey, 0, ElaIconType::Gear);
+    _settingPage->applySavedSettings();
 }
 
 /*****************************************************
@@ -86,4 +91,10 @@ void MainWindow::initializeConnections()
             _monitorPage, &MonitorPage::appendSentData);
     connect(_serialController, &SerialController::errorOccurred,
             _monitorPage, &MonitorPage::showError);
+
+    // 仅在串口监视页面显示串口配置工具栏。
+    connect(this, &ElaWindow::navigationNodeClicked, this,
+            [this](ElaNavigationType::NavigationNodeType, const QString& nodeKey) {
+        _monitorPage->serialToolBar()->setVisible(nodeKey == _monitorPageKey);
+    });
 }

@@ -5,6 +5,7 @@
 
 class MonitorPage;
 class SerialController;
+class SettingPage;
 
 class MainWindow final : public ElaWindow
 {
@@ -23,7 +24,10 @@ private:
     void initializeConnections();
 
     MonitorPage* _monitorPage{nullptr};
+    SettingPage* _settingPage{nullptr};
     SerialController* _serialController{nullptr};
+    QString _monitorPageKey;
+    QString _settingPageKey;
 };
 
 #endif // MAINWINDOW_H
