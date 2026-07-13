@@ -3,6 +3,11 @@ cmake_policy(SET CMP0087 NEW)
 
 project(CommunicationAnalyzer VERSION 0.1.0 LANGUAGES CXX)
 
+option(COMMUNICATION_ANALYZER_RUN_AFTER_BUILD
+    "Launch CommunicationAnalyzer automatically after a successful build"
+    ON
+)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -34,6 +39,8 @@ qt_add_executable(CommunicationAnalyzer
     src/communication/SerialController.h
     src/pages/MonitorPage.cpp
     src/pages/MonitorPage.h
+    src/widgets/TrafficTextEdit.cpp
+    src/widgets/TrafficTextEdit.h
 )
 
 target_include_directories(CommunicationAnalyzer PRIVATE src)
@@ -76,4 +83,19 @@ if(WIN32)
             message(FATAL_ERROR \"windeployqt failed with code: \${DEPLOY_RESULT}\")
         endif()
     ")
+endif()
+
+if(WIN32 AND COMMUNICATION_ANALYZER_RUN_AFTER_BUILD)
+    add_custom_command(TARGET CommunicationAnalyzer POST_BUILD
+        COMMAND powershell.exe
+            -NoProfile
+            -NonInteractive
+            -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/cmake/RunAfterBuild.ps1"
+            -Executable "$<TARGET_FILE:CommunicationAnalyzer>"
+            -QtBinDir "${QT_BIN_DIR}"
+            -ElaBinDir "$<TARGET_FILE_DIR:ElaWidgetTools>"
+        COMMENT "Launching CommunicationAnalyzer after successful build"
+        VERBATIM
+    )
 endif()

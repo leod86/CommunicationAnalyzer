@@ -16,7 +16,16 @@ SerialController::SerialController(QObject* parent)
     // 连接串口接收与错误事件。
     connect(&_serialPort, &QSerialPort::readyRead, this, &SerialController::handleReadyRead);
     connect(&_serialPort, &QSerialPort::errorOccurred, this, &SerialController::handleSerialError);
+    connect(&_portMonitorTimer, &QTimer::timeout, this, [this]() {
+        updateAvailablePorts(false);
+    });
+    _portMonitorTimer.setInterval(1000);
+    _portMonitorTimer.start();
+
+    _frameTimer.setSingleShot(true);
+    connect(&_frameTimer, &QTimer::timeout, this, &SerialController::flushReceivedFrame);
 }
+
 /*****************************************************
 函数名称：SerialController::~SerialController()
 入口参数：无
@@ -25,39 +34,61 @@ SerialController::SerialController(QObject* parent)
 *****************************************************/
 SerialController::~SerialController()
 {
-    // 关闭可能仍处于打开状态的串口。
-    closePort();
+    if (_serialPort.isOpen())
+    {
+        _serialPort.close();
+    }
 }
 
 /*****************************************************
 函数名称：void SerialController::refreshPorts()
 入口参数：无
 出口参数：无
-函数功能：获取并发布当前可用串口列表
+函数功能：获取并发布当前可用串口及其描述
 *****************************************************/
 void SerialController::refreshPorts()
 {
-    QStringList portNames;
-
-    // 收集系统当前可枚举的串口名称。
-    const QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
-    for (const QSerialPortInfo& port : ports)
-    {
-        portNames.append(port.portName());
-    }
-
-    // 保持串口列表显示顺序稳定。
-    std::sort(portNames.begin(), portNames.end());
-    emit portsUpdated(portNames);
+    updateAvailablePorts(true);
 }
 
 /*****************************************************
-函数名称：void SerialController::openPort(const QString& portName, qint32 baudRate)
-入口参数：portName为串口名称，baudRate为波特率
+函数名称：void SerialController::updateAvailablePorts(bool forceUpdate)
+入口参数：forceUpdate为是否强制通知界面
 出口参数：无
-函数功能：按照8N1无流控参数打开指定串口
+函数功能：扫描串口列表，并在设备插拔或描述变化时刷新界面
 *****************************************************/
-void SerialController::openPort(const QString& portName, qint32 baudRate)
+void SerialController::updateAvailablePorts(bool forceUpdate)
+{
+    QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
+    std::sort(ports.begin(), ports.end(), [](const QSerialPortInfo& left, const QSerialPortInfo& right) {
+        return left.portName().localeAwareCompare(right.portName()) < 0;
+    });
+
+    QStringList portNames;
+    QStringList descriptions;
+    for (const QSerialPortInfo& port : ports)
+    {
+        portNames.append(port.portName());
+        descriptions.append(port.description());
+    }
+
+    if (!forceUpdate && portNames == _lastPortNames && descriptions == _lastPortDescriptions)
+    {
+        return;
+    }
+
+    _lastPortNames = portNames;
+    _lastPortDescriptions = descriptions;
+    emit portsUpdated(_lastPortNames, _lastPortDescriptions);
+}
+
+/*****************************************************
+函数名称：void SerialController::openPort(const QString& portName, qint32 baudRate, int dataBits, int parity, int stopBits)
+入口参数：portName为串口名，baudRate为波特率，dataBits为数据位，parity为校验位，stopBits为停止位
+出口参数：无
+函数功能：使用完整串口参数打开指定设备
+*****************************************************/
+void SerialController::openPort(const QString& portName, qint32 baudRate, int dataBits, int parity, int stopBits)
 {
     if (portName.isEmpty())
     {
@@ -65,21 +96,27 @@ void SerialController::openPort(const QString& portName, qint32 baudRate)
         return;
     }
 
-    // 切换端口前先关闭当前连接。
     if (_serialPort.isOpen())
     {
         _serialPort.close();
     }
+    _frameTimer.stop();
+    _receiveBuffer.clear();
 
-    // 配置通用8N1串口参数。
     _serialPort.setPortName(portName);
-    _serialPort.setBaudRate(baudRate);
-    _serialPort.setDataBits(QSerialPort::Data8);
-    _serialPort.setParity(QSerialPort::NoParity);
-    _serialPort.setStopBits(QSerialPort::OneStop);
-    _serialPort.setFlowControl(QSerialPort::NoFlowControl);
+    const bool configured = _serialPort.setBaudRate(baudRate)
+        && _serialPort.setDataBits(static_cast<QSerialPort::DataBits>(dataBits))
+        && _serialPort.setParity(static_cast<QSerialPort::Parity>(parity))
+        && _serialPort.setStopBits(static_cast<QSerialPort::StopBits>(stopBits))
+        && _serialPort.setFlowControl(QSerialPort::NoFlowControl);
 
-    // 以异步读写模式打开串口。
+    if (!configured)
+    {
+        emit errorOccurred(QStringLiteral("串口参数不受当前设备支持"));
+        emit connectionStateChanged(false, QStringLiteral("未连接"));
+        return;
+    }
+
     if (!_serialPort.open(QIODevice::ReadWrite))
     {
         emit errorOccurred(QStringLiteral("打开 %1 失败：%2").arg(portName, _serialPort.errorString()));
@@ -98,7 +135,7 @@ void SerialController::openPort(const QString& portName, qint32 baudRate)
 *****************************************************/
 void SerialController::closePort()
 {
-    // 仅在串口已打开时执行关闭操作。
+    flushReceivedFrame();
     if (_serialPort.isOpen())
     {
         _serialPort.close();
@@ -127,7 +164,6 @@ void SerialController::writeData(const QByteArray& data)
         return;
     }
 
-    // 写入Qt串口发送缓冲区。
     if (_serialPort.write(data) < 0)
     {
         emit errorOccurred(QStringLiteral("发送失败：%1").arg(_serialPort.errorString()));
@@ -138,6 +174,21 @@ void SerialController::writeData(const QByteArray& data)
 }
 
 /*****************************************************
+函数名称：void SerialController::setFrameTimeout(int milliseconds)
+入口参数：milliseconds为断帧等待时间，单位毫秒
+出口参数：无
+函数功能：更新串口接收数据的静默断帧时间
+*****************************************************/
+void SerialController::setFrameTimeout(int milliseconds)
+{
+    _frameTimeoutMilliseconds = qBound(1, milliseconds, 5000);
+    if (_frameTimer.isActive())
+    {
+        _frameTimer.start(_frameTimeoutMilliseconds);
+    }
+}
+
+/*****************************************************
 函数名称：void SerialController::handleReadyRead()
 入口参数：无
 出口参数：无
@@ -145,12 +196,33 @@ void SerialController::writeData(const QByteArray& data)
 *****************************************************/
 void SerialController::handleReadyRead()
 {
-    // 一次读取当前缓冲区全部数据，避免残留阻塞后续解析。
-    const QByteArray data = _serialPort.readAll();
-    if (!data.isEmpty())
+    const QByteArray receivedData = _serialPort.readAll();
+    if (receivedData.isEmpty())
     {
-        emit dataReceived(data);
+        return;
     }
+
+    _receiveBuffer.append(receivedData);
+    _frameTimer.start(_frameTimeoutMilliseconds);
+}
+
+/*****************************************************
+函数名称：void SerialController::flushReceivedFrame()
+入口参数：无
+出口参数：无
+函数功能：静默时间到达后发布并清空当前完整接收帧
+*****************************************************/
+void SerialController::flushReceivedFrame()
+{
+    _frameTimer.stop();
+    if (_receiveBuffer.isEmpty())
+    {
+        return;
+    }
+
+    const QByteArray completeFrame = _receiveBuffer;
+    _receiveBuffer.clear();
+    emit dataReceived(completeFrame);
 }
 
 /*****************************************************
@@ -167,8 +239,6 @@ void SerialController::handleSerialError(QSerialPort::SerialPortError error)
     }
 
     emit errorOccurred(_serialPort.errorString());
-
-    // 设备被移除或资源不可用时终止当前连接。
     if (error == QSerialPort::ResourceError)
     {
         closePort();

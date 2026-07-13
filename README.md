@@ -38,6 +38,12 @@ cmake --build build/Release --parallel
 cmake --install build/Release
 ```
 
+构建成功后会自动启动刚生成的程序。若不需要自动启动，可在配置时关闭：
+
+```powershell
+cmake -S . -B build/Release -DCOMMUNICATION_ANALYZER_RUN_AFTER_BUILD=OFF
+```
+
 安装后的程序：
 
 ```text

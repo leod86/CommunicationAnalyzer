@@ -1,6 +1,7 @@
 #include "app/MainWindow.h"
 
 #include "communication/SerialController.h"
+#include "ElaToolBar.h"
 #include "pages/MonitorPage.h"
 
 /*****************************************************
@@ -17,6 +18,9 @@ MainWindow::MainWindow(QWidget* parent)
     // 初始化窗口及业务信号连接。
     initializeWindow();
     initializeConnections();
+
+    // 将已保存的断帧时间同步到串口控制器。
+    _serialController->setFrameTimeout(_monitorPage->frameTimeout());
 
     // 首次启动时刷新可用串口。
     _serialController->refreshPorts();
@@ -38,13 +42,17 @@ MainWindow::~MainWindow() = default;
 void MainWindow::initializeWindow()
 {
     // 配置主窗口基础属性。
-    resize(1180, 760);
-    setMinimumSize(900, 620);
+    resize(1000, 650);
+    setMinimumSize(520, 360);
     setWindowTitle(QStringLiteral("通讯分析器"));
     setUserInfoCardVisible(false);
+    setNavigationBarDisplayMode(ElaNavigationType::Minimal);
+
+    // 将串口配置固定在窗口顶部，避免占用通讯页面的垂直空间。
+    addToolBar(Qt::TopToolBarArea, _monitorPage->serialToolBar());
 
     // 注册通讯监视导航页面。
-    addPageNode(QStringLiteral("通讯监视"), _monitorPage, ElaIconType::Table);
+    addPageNode(QStringLiteral("Connection"), _monitorPage, ElaIconType::Table);
 }
 
 /*****************************************************
@@ -64,6 +72,8 @@ void MainWindow::initializeConnections()
             _serialController, &SerialController::closePort);
     connect(_monitorPage, &MonitorPage::sendDataRequested,
             _serialController, &SerialController::writeData);
+    connect(_monitorPage, &MonitorPage::frameTimeoutChanged,
+            _serialController, &SerialController::setFrameTimeout);
 
     // 将串口状态和数据反馈到页面。
     connect(_serialController, &SerialController::portsUpdated,
