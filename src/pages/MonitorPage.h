@@ -11,13 +11,17 @@ class ElaComboBox;
 class ElaCheckBox;
 class ElaIconButton;
 class ElaLineEdit;
+class ElaListView;
+class ElaPivot;
 class ElaPushButton;
 class ElaText;
 class ElaToolBar;
 class ElaToggleSwitch;
 class ElaToolButton;
 class QFile;
+class QStandardItemModel;
 class QSplitter;
+class QStackedWidget;
 class QTimer;
 class QValidator;
 class TrafficTextEdit;
@@ -71,8 +75,8 @@ private slots:
     void handleHexTransmitChanged(const QString& text);
     // 校验并应用文本输入的断帧时间。
     void handleFrameTimeoutEditingFinished();
-    // 展开或折叠右侧多字符串发送配置区。
-    void handleMultiSendToggled(bool expanded);
+    // 切换右侧发送和报文搜索页面。
+    void handleSidePanelPageChanged(int index);
     // 开启或停止主发送区的连续发送。
     void handleContinuousSendToggled(bool checked);
     // 校验并应用连续发送间隔。
@@ -87,6 +91,8 @@ private slots:
     void handlePauseScrollToggled(bool paused);
     // 更新每秒收发速率。
     void updateTransferRate();
+    // 根据搜索输入更新接收报文的命中背景和Ela结果列表。
+    void updateTrafficSearch();
 
 private:
     // 单条通讯记录，保存方向、时间和原始字节数据。
@@ -142,6 +148,8 @@ private:
     void writeLog(const TrafficRecord& record);
     // 根据连接状态启用或锁定硬件参数。
     void setHardwareControlsEnabled(bool enabled);
+    // 将接收窗口滚动到指定搜索结果对应的文档块。
+    void locateTrafficSearchResult(int blockId);
 
     ElaComboBox* _transportComboBox{nullptr};
     ElaComboBox* _portComboBox{nullptr};
@@ -163,25 +171,31 @@ private:
     ElaToolButton* _ansiButton{nullptr};
     ElaToolButton* _logButton{nullptr};
     ElaToolButton* _pauseScrollButton{nullptr};
+    ElaLineEdit* _trafficSearchEdit{nullptr};
+    ElaListView* _trafficSearchResults{nullptr};
+    QStandardItemModel* _trafficSearchResultsModel{nullptr};
     ElaLineEdit* _textTransmitEdit{nullptr};
     ElaLineEdit* _hexTransmitEdit{nullptr};
     ElaPushButton* _inputModeButton{nullptr};
     ElaComboBox* _checksumComboBox{nullptr};
     ElaComboBox* _suffixComboBox{nullptr};
     ElaPushButton* _sendButton{nullptr};
-    ElaPushButton* _multiSendToggleButton{nullptr};
     ElaCheckBox* _continuousSendCheckBox{nullptr};
     ElaLineEdit* _sendIntervalEdit{nullptr};
+    ElaPivot* _sidePanelPivot{nullptr};
+    QStackedWidget* _sidePanelStackedWidget{nullptr};
     QSplitter* _contentSplitter{nullptr};
-    QWidget* _multiSendPanel{nullptr};
     ElaText* _statusText{nullptr};
     ElaText* _transferText{nullptr};
     QFile* _logFile{nullptr};
     QTimer* _rateTimer{nullptr};
     QTimer* _continuousSendTimer{nullptr};
+    QTimer* _trafficSearchTimer{nullptr};
     QList<TrafficRecord> _trafficRecords;
     QList<QuickSendItem> _quickSendItems;
     QString _preferredPortName;
+    QString _trafficSearchQuery;
+    int _nextTrafficSearchBlockId{0};
     bool _connected{false};
     quint64 _rxBytes{0};
     quint64 _txBytes{0};

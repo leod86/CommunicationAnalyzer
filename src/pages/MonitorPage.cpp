@@ -4,7 +4,9 @@
 #include "ElaComboBox.h"
 #include "ElaIconButton.h"
 #include "ElaLineEdit.h"
+#include "ElaListView.h"
 #include "ElaMessageBar.h"
+#include "ElaPivot.h"
 #include "ElaPushButton.h"
 #include "ElaScrollArea.h"
 #include "ElaText.h"
@@ -27,58 +29,63 @@
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QSerialPort>
+#include <QSet>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QShowEvent>
 #include <QSplitter>
+#include <QStackedWidget>
+#include <QStandardItem>
+#include <QStandardItemModel>
+#include <QTextBlock>
 #include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextEdit>
 #include <QTextStream>
 #include <QTimer>
 #include <QVBoxLayout>
 
 namespace
 {
-// 响应式控件位置，分别记录宽布局和紧凑布局中的坐标。
+// 流式控件位置，记录控件及其从左到右的排列顺序。
 struct ResponsiveItemPosition
 {
     QWidget* widget{nullptr};
-    int wideColumn{0};
-    int compactRow{0};
-    int compactColumn{0};
+    int order{0};
 };
 
 class ResponsiveRowWidget final : public QWidget
 {
 public:
-    // 创建可根据可用宽度切换行数的控件容器。
+    // 创建可根据可用宽度自然换行的控件容器。
     explicit ResponsiveRowWidget(QWidget* parent = nullptr);
-    // 注册控件在单行和紧凑布局中的排列位置。
-    void addResponsiveWidget(QWidget* widget, int wideColumn, int compactRow, int compactColumn);
+    // 注册控件及其从左到右的排列顺序。
+    void addResponsiveWidget(QWidget* widget, int order);
+    // 返回不锁定横向宽度的推荐尺寸。
+    QSize sizeHint() const override;
+    // 返回不锁定横向宽度的最小尺寸。
+    QSize minimumSizeHint() const override;
 
 protected:
-    // 在可用宽度变化后重新判断排列模式。
+    // 在可用宽度变化后重新计算自然断行位置。
     void resizeEvent(QResizeEvent* event) override;
-    // 在首次显示时按最终父布局宽度校正排列模式。
+    // 在首次显示时按最终宽度校正自然断行位置。
     void showEvent(QShowEvent* event) override;
 
 private:
-    // 判断所有控件能否在当前可用宽度中单行显示。
-    bool shouldUseCompactLayout(int availableWidth) const;
-    // 按当前排列模式重建内部行布局。
-    void updateResponsiveLayout();
+    // 按当前可用宽度依次放置控件并在空间不足时换行。
+    void updateResponsiveLayout(int availableWidth);
 
     QVBoxLayout* _rootLayout{nullptr};
     QList<ResponsiveItemPosition> _items;
-    bool _compact{false};
 };
 
 /*****************************************************
 函数名称：ResponsiveRowWidget::ResponsiveRowWidget(QWidget* parent)
 入口参数：parent为父窗口
 出口参数：无
-函数功能：创建可在单行和多行之间切换的响应式控件容器
+函数功能：创建按可用宽度自然换行的响应式控件容器
 *****************************************************/
 ResponsiveRowWidget::ResponsiveRowWidget(QWidget* parent)
     : QWidget(parent)
@@ -86,91 +93,83 @@ ResponsiveRowWidget::ResponsiveRowWidget(QWidget* parent)
 {
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
     _rootLayout->setContentsMargins(0, 0, 0, 0);
-    _rootLayout->setSpacing(6);
+    _rootLayout->setSpacing(5);
 }
 
 /*****************************************************
-函数名称：void ResponsiveRowWidget::addResponsiveWidget(QWidget* widget, int wideColumn, int compactRow, int compactColumn)
-入口参数：widget为控件，wideColumn为宽布局列，compactRow和compactColumn为紧凑布局坐标
+函数名称：void ResponsiveRowWidget::addResponsiveWidget(QWidget* widget, int order)
+入口参数：widget为控件，order为控件从左到右的排列顺序
 出口参数：无
-函数功能：注册控件在两种响应式布局中的位置
+函数功能：注册流式控件并按照当前宽度重新计算断行位置
 *****************************************************/
-void ResponsiveRowWidget::addResponsiveWidget(QWidget* widget, int wideColumn, int compactRow, int compactColumn)
+void ResponsiveRowWidget::addResponsiveWidget(QWidget* widget, int order)
 {
     QSizePolicy sizePolicy = widget->sizePolicy();
     sizePolicy.setHorizontalPolicy(QSizePolicy::Maximum);
     widget->setSizePolicy(sizePolicy);
-    _items.append({widget, wideColumn, compactRow, compactColumn});
-    const int availableWidth = parentWidget() ? parentWidget()->contentsRect().width() : width();
-    _compact = shouldUseCompactLayout(availableWidth);
-    updateResponsiveLayout();
+    _items.append({widget, order});
+    updateResponsiveLayout(width());
 }
 
 /*****************************************************
-函数名称：bool ResponsiveRowWidget::shouldUseCompactLayout(int availableWidth) const
-入口参数：availableWidth为容器当前可用宽度
-出口参数：当前宽度无法容纳单行时返回true
-函数功能：根据所有控件的实际尺寸计算是否需要切换为紧凑多行布局
+函数名称：QSize ResponsiveRowWidget::sizeHint() const
+入口参数：无
+出口参数：不限制横向宽度的推荐尺寸
+函数功能：避免当前行宽度反向锁定父布局，使流式工具栏可以随分割器缩窄
 *****************************************************/
-bool ResponsiveRowWidget::shouldUseCompactLayout(int availableWidth) const
+QSize ResponsiveRowWidget::sizeHint() const
 {
-    constexpr int rowSpacing = 6;
-    int wideLayoutWidth = qMax(0, _items.size() - 1) * rowSpacing;
-    for (const ResponsiveItemPosition& item : _items)
-    {
-        const int widgetWidth = item.widget->isVisible()
-            ? item.widget->width()
-            : item.widget->sizeHint().width();
-        wideLayoutWidth += qMax(item.widget->minimumWidth(), widgetWidth);
-    }
-    return availableWidth < wideLayoutWidth;
+    QSize hint = QWidget::sizeHint();
+    hint.setWidth(0);
+    return hint;
+}
+
+/*****************************************************
+函数名称：QSize ResponsiveRowWidget::minimumSizeHint() const
+入口参数：无
+出口参数：不限制横向宽度的最小尺寸
+函数功能：仅保留流式工具栏的纵向高度要求，不向父布局传递当前行的最小宽度
+*****************************************************/
+QSize ResponsiveRowWidget::minimumSizeHint() const
+{
+    QSize hint = QWidget::minimumSizeHint();
+    hint.setWidth(0);
+    return hint;
 }
 
 /*****************************************************
 函数名称：void ResponsiveRowWidget::resizeEvent(QResizeEvent* event)
 入口参数：event为尺寸变化事件
 出口参数：无
-函数功能：可用宽度无法容纳单行时重新排列内部控件
+函数功能：容器宽度变化时按照控件实际宽度重新计算自然断行位置
 *****************************************************/
 void ResponsiveRowWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
-    const int availableWidth = parentWidget() ? parentWidget()->contentsRect().width() : event->size().width();
-    const bool compact = shouldUseCompactLayout(availableWidth);
-    if (_compact != compact)
-    {
-        _compact = compact;
-        updateResponsiveLayout();
-    }
+    updateResponsiveLayout(event->size().width());
 }
 
 /*****************************************************
 函数名称：void ResponsiveRowWidget::showEvent(QShowEvent* event)
 入口参数：event为控件显示事件
 出口参数：无
-函数功能：控件首次显示时根据最终可用宽度校正单行或多行布局
+函数功能：控件首次显示时根据最终可用宽度校正自然断行位置
 *****************************************************/
 void ResponsiveRowWidget::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
     QTimer::singleShot(0, this, [this] {
-        const int availableWidth = parentWidget() ? parentWidget()->contentsRect().width() : width();
-        const bool compact = shouldUseCompactLayout(availableWidth);
-        if (_compact != compact)
-        {
-            _compact = compact;
-            updateResponsiveLayout();
-        }
+        updateResponsiveLayout(width());
     });
 }
 
 /*****************************************************
-函数名称：void ResponsiveRowWidget::updateResponsiveLayout()
-入口参数：无
+函数名称：void ResponsiveRowWidget::updateResponsiveLayout(int availableWidth)
+入口参数：availableWidth为容器当前可用宽度
 出口参数：无
-函数功能：按照当前宽度模式更新所有控件的行内位置
+函数功能：按控件自然宽度依次排列并在当前行空间不足时换行
 *****************************************************/
-void ResponsiveRowWidget::updateResponsiveLayout()
+void ResponsiveRowWidget::updateResponsiveLayout(int availableWidth)
 {
     while (QLayoutItem* rowItem = _rootLayout->takeAt(0))
     {
@@ -189,39 +188,48 @@ void ResponsiveRowWidget::updateResponsiveLayout()
         }
     }
 
-    int rowCount = 1;
-    if (_compact)
+    QList<ResponsiveItemPosition> orderedItems = _items;
+    std::sort(orderedItems.begin(), orderedItems.end(), [](const ResponsiveItemPosition& left,
+                                                           const ResponsiveItemPosition& right) {
+        return left.order < right.order;
+    });
+
+    constexpr int itemSpacing = 5;
+    const int usableWidth = qMax(1, availableWidth);
+    QList<QList<QWidget*>> rows;
+    QList<QWidget*> currentRow;
+    int currentRowWidth = 0;
+    for (const ResponsiveItemPosition& item : orderedItems)
     {
-        for (const ResponsiveItemPosition& item : _items)
+        const int widgetWidth = qMax(item.widget->minimumWidth(),
+                                     item.widget->isVisible() ? item.widget->width()
+                                                              : item.widget->sizeHint().width());
+        const int requiredWidth = widgetWidth + (currentRow.isEmpty() ? 0 : itemSpacing);
+        if (!currentRow.isEmpty() && currentRowWidth + requiredWidth > usableWidth)
         {
-            rowCount = qMax(rowCount, item.compactRow + 1);
+            rows.append(currentRow);
+            currentRow.clear();
+            currentRowWidth = 0;
         }
+
+        currentRow.append(item.widget);
+        currentRowWidth += widgetWidth + (currentRow.size() == 1 ? 0 : itemSpacing);
+    }
+    if (!currentRow.isEmpty())
+    {
+        rows.append(currentRow);
     }
 
-    for (int row = 0; row < rowCount; ++row)
+    for (const QList<QWidget*>& row : rows)
     {
         auto* rowLayout = new QHBoxLayout();
         rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(6);
-
-        QList<ResponsiveItemPosition> rowItems;
-        for (const ResponsiveItemPosition& item : _items)
+        rowLayout->setSpacing(itemSpacing);
+        for (QWidget* widget : row)
         {
-            if ((_compact && item.compactRow == row) || (!_compact && row == 0))
-            {
-                rowItems.append(item);
-            }
+            rowLayout->addWidget(widget);
         }
-        std::sort(rowItems.begin(), rowItems.end(), [this](const ResponsiveItemPosition& left,
-                                                           const ResponsiveItemPosition& right) {
-            return _compact ? left.compactColumn < right.compactColumn : left.wideColumn < right.wideColumn;
-        });
-
-        for (const ResponsiveItemPosition& item : rowItems)
-        {
-            rowLayout->addWidget(item.widget);
-        }
-        rowLayout->addStretch();
+        rowLayout->addStretch(1);
         _rootLayout->addLayout(rowLayout);
     }
     updateGeometry();
@@ -311,17 +319,27 @@ void MonitorPage::buildUi()
     pageContent->setWindowTitle(QStringLiteral("串口监视"));
     pageContent->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto* pageLayout = new QVBoxLayout(pageContent);
-    pageLayout->setSizeConstraint(QLayout::SetMinimumSize);
+    pageLayout->setSizeConstraint(QLayout::SetNoConstraint);
     pageLayout->setContentsMargins(0, 8, 12, 8);
     pageLayout->setSpacing(8);
 
     auto* displayToolbarWidget = new ResponsiveRowWidget(this);
+    QFont compactControlFont = font();
+    if (compactControlFont.pointSizeF() > 0)
+    {
+        compactControlFont.setPointSizeF(compactControlFont.pointSizeF() * 0.85);
+    }
+    else if (compactControlFont.pixelSize() > 0)
+    {
+        compactControlFont.setPixelSize(qMax(1, qRound(compactControlFont.pixelSize() * 0.85)));
+    }
 
     _dataFormatComboBox = new ElaComboBox(this);
     _dataFormatComboBox->addItem(QStringLiteral("RawData-文本"), 0);
     _dataFormatComboBox->addItem(QStringLiteral("RawData-HEX"), 1);
     _dataFormatComboBox->addItem(QStringLiteral("RawData-HEX对照"), 2);
-    _dataFormatComboBox->setFixedWidth(150);
+    _dataFormatComboBox->setFixedSize(144, 30);
+    _dataFormatComboBox->setFont(compactControlFont);
     _dataFormatComboBox->setToolTip(QStringLiteral("选择固定RawData显示方式；自定义解析显示将在后续加入"));
 
     _timeButton = new ElaToolButton(this);
@@ -330,6 +348,8 @@ void MonitorPage::buildUi()
     _timeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     _timeButton->setCheckable(true);
     _timeButton->setChecked(true);
+    _timeButton->setFixedHeight(30);
+    _timeButton->setFont(compactControlFont);
 
     _utf8Button = new ElaToolButton(this);
     _utf8Button->setText(QStringLiteral("UTF-8"));
@@ -337,6 +357,8 @@ void MonitorPage::buildUi()
     _utf8Button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     _utf8Button->setCheckable(true);
     _utf8Button->setChecked(true);
+    _utf8Button->setFixedHeight(30);
+    _utf8Button->setFont(compactControlFont);
 
     _rxButton = new ElaToolButton(this);
     _rxButton->setText(QStringLiteral("RX"));
@@ -344,6 +366,8 @@ void MonitorPage::buildUi()
     _rxButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     _rxButton->setCheckable(true);
     _rxButton->setChecked(true);
+    _rxButton->setFixedHeight(30);
+    _rxButton->setFont(compactControlFont);
 
     _txButton = new ElaToolButton(this);
     _txButton->setText(QStringLiteral("TX"));
@@ -351,12 +375,16 @@ void MonitorPage::buildUi()
     _txButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     _txButton->setCheckable(true);
     _txButton->setChecked(true);
+    _txButton->setFixedHeight(30);
+    _txButton->setFont(compactControlFont);
 
     _ansiButton = new ElaToolButton(this);
     _ansiButton->setText(QStringLiteral("ANSI"));
     _ansiButton->setElaIcon(ElaIconType::Terminal);
     _ansiButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     _ansiButton->setCheckable(true);
+    _ansiButton->setFixedHeight(30);
+    _ansiButton->setFont(compactControlFont);
     _ansiButton->setToolTip(QStringLiteral("解析并隐藏 ANSI 控制序列"));
 
     _logButton = new ElaToolButton(this);
@@ -364,6 +392,8 @@ void MonitorPage::buildUi()
     _logButton->setElaIcon(ElaIconType::Circle);
     _logButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     _logButton->setCheckable(true);
+    _logButton->setFixedHeight(30);
+    _logButton->setFont(compactControlFont);
     _logButton->setToolTip(QStringLiteral("将后续收发数据写入日志文件"));
 
     _pauseScrollButton = new ElaToolButton(this);
@@ -371,38 +401,41 @@ void MonitorPage::buildUi()
     _pauseScrollButton->setElaIcon(ElaIconType::Pause);
     _pauseScrollButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     _pauseScrollButton->setCheckable(true);
+    _pauseScrollButton->setFixedHeight(30);
+    _pauseScrollButton->setFont(compactControlFont);
     _pauseScrollButton->setToolTip(QStringLiteral("锁定当前滚动位置，收发数据仍继续追加"));
 
     auto* receiveSeparator = new QFrame(this);
     receiveSeparator->setFrameShape(QFrame::VLine);
     receiveSeparator->setFrameShadow(QFrame::Sunken);
-    receiveSeparator->setFixedHeight(26);
+    receiveSeparator->setFixedHeight(22);
 
     auto* frameTimeoutLabel = new ElaText(QStringLiteral("断帧(ms)"), this);
-    frameTimeoutLabel->setTextPixelSize(13);
+    frameTimeoutLabel->setTextPixelSize(11);
 
     _frameTimeoutEdit = new ElaLineEdit(this);
     _frameTimeoutEdit->setText(QStringLiteral("20"));
     _frameTimeoutEdit->setValidator(new QIntValidator(1, 5000, _frameTimeoutEdit));
-    _frameTimeoutEdit->setFixedWidth(68);
+    _frameTimeoutEdit->setFixedSize(58, 30);
+    _frameTimeoutEdit->setFont(compactControlFont);
     _frameTimeoutEdit->setAlignment(Qt::AlignCenter);
     _frameTimeoutEdit->setToolTip(QStringLiteral("连续接收数据静默指定时间后合并为一帧"));
 
-    auto* clearButton = new ElaIconButton(ElaIconType::Eraser, 18, 36, 32, this);
+    auto* clearButton = new ElaIconButton(ElaIconType::Eraser, 15, 31, 27, this);
     clearButton->setToolTip(QStringLiteral("清空显示和统计"));
 
-    displayToolbarWidget->addResponsiveWidget(_dataFormatComboBox, 0, 0, 0);
-    displayToolbarWidget->addResponsiveWidget(_timeButton, 1, 0, 1);
-    displayToolbarWidget->addResponsiveWidget(_utf8Button, 2, 0, 2);
-    displayToolbarWidget->addResponsiveWidget(_rxButton, 3, 0, 3);
-    displayToolbarWidget->addResponsiveWidget(_txButton, 4, 0, 4);
-    displayToolbarWidget->addResponsiveWidget(_ansiButton, 5, 1, 0);
-    displayToolbarWidget->addResponsiveWidget(_logButton, 6, 1, 1);
-    displayToolbarWidget->addResponsiveWidget(_pauseScrollButton, 7, 1, 2);
-    displayToolbarWidget->addResponsiveWidget(receiveSeparator, 8, 1, 3);
-    displayToolbarWidget->addResponsiveWidget(frameTimeoutLabel, 9, 1, 4);
-    displayToolbarWidget->addResponsiveWidget(_frameTimeoutEdit, 10, 1, 5);
-    displayToolbarWidget->addResponsiveWidget(clearButton, 11, 1, 6);
+    displayToolbarWidget->addResponsiveWidget(_dataFormatComboBox, 0);
+    displayToolbarWidget->addResponsiveWidget(_timeButton, 1);
+    displayToolbarWidget->addResponsiveWidget(_utf8Button, 2);
+    displayToolbarWidget->addResponsiveWidget(_rxButton, 3);
+    displayToolbarWidget->addResponsiveWidget(_txButton, 4);
+    displayToolbarWidget->addResponsiveWidget(_ansiButton, 5);
+    displayToolbarWidget->addResponsiveWidget(_logButton, 6);
+    displayToolbarWidget->addResponsiveWidget(_pauseScrollButton, 7);
+    displayToolbarWidget->addResponsiveWidget(receiveSeparator, 8);
+    displayToolbarWidget->addResponsiveWidget(frameTimeoutLabel, 9);
+    displayToolbarWidget->addResponsiveWidget(_frameTimeoutEdit, 10);
+    displayToolbarWidget->addResponsiveWidget(clearButton, 11);
 
     _trafficView = new TrafficTextEdit(this);
     _trafficView->setReadOnly(true);
@@ -410,26 +443,29 @@ void MonitorPage::buildUi()
     _trafficView->setPlaceholderText(QStringLiteral("连接设备后，收发数据将在这里显示"));
     _trafficView->document()->setMaximumBlockCount(20000);
 
-    auto* transmitLayout = new QGridLayout();
-    transmitLayout->setContentsMargins(12, 0, 0, 0);
-    transmitLayout->setHorizontalSpacing(8);
-    transmitLayout->setSpacing(8);
+    auto* singleSendPanel = new QWidget(this);
+    auto* transmitLayout = new QGridLayout(singleSendPanel);
+    transmitLayout->setContentsMargins(0, 0, 2, 0);
+    transmitLayout->setHorizontalSpacing(7);
+    transmitLayout->setVerticalSpacing(7);
 
     auto* textInputLabel = new ElaText(QStringLiteral("文本"), this);
-    textInputLabel->setTextPixelSize(13);
-    textInputLabel->setFixedWidth(42);
+    textInputLabel->setTextPixelSize(11);
 
     auto* hexInputLabel = new ElaText(QStringLiteral("HEX"), this);
-    hexInputLabel->setTextPixelSize(13);
-    hexInputLabel->setFixedWidth(42);
+    hexInputLabel->setTextPixelSize(11);
 
     _textTransmitEdit = new ElaLineEdit(this);
     _textTransmitEdit->setPlaceholderText(QStringLiteral("输入文本数据，例如：Spd_Cmd:0.0"));
     _textTransmitEdit->setClearButtonEnabled(true);
+    _textTransmitEdit->setFixedHeight(30);
+    _textTransmitEdit->setFont(compactControlFont);
 
     _hexTransmitEdit = new ElaLineEdit(this);
     _hexTransmitEdit->setPlaceholderText(QStringLiteral("输入HEX数据，例如：01 03 00 00 00 02"));
     _hexTransmitEdit->setClearButtonEnabled(true);
+    _hexTransmitEdit->setFixedHeight(30);
+    _hexTransmitEdit->setFont(compactControlFont);
     _hexTransmitEdit->setValidator(new QRegularExpressionValidator(
         QRegularExpression(QStringLiteral("^[0-9A-Fa-f\\s]*$")), _hexTransmitEdit));
 
@@ -439,6 +475,8 @@ void MonitorPage::buildUi()
     _checksumComboBox->addItem(QStringLiteral("SUM8"), 2);
     _checksumComboBox->addItem(QStringLiteral("CRC16"), 3);
     _checksumComboBox->setMinimumWidth(112);
+    _checksumComboBox->setFixedHeight(30);
+    _checksumComboBox->setFont(compactControlFont);
     _checksumComboBox->setToolTip(QStringLiteral("发送前追加校验值"));
 
     _suffixComboBox = new ElaComboBox(this);
@@ -448,55 +486,62 @@ void MonitorPage::buildUi()
     _suffixComboBox->addItem(QStringLiteral("\\r"), QByteArray("\r"));
     _suffixComboBox->setCurrentIndex(1);
     _suffixComboBox->setMinimumWidth(88);
+    _suffixComboBox->setFixedHeight(30);
+    _suffixComboBox->setFont(compactControlFont);
     _suffixComboBox->setToolTip(QStringLiteral("发送结束符"));
 
     _inputModeButton = new ElaPushButton(QStringLiteral("ABC"), this);
     _inputModeButton->setCheckable(true);
-    _inputModeButton->setFixedWidth(76);
+    _inputModeButton->setFixedSize(65, 30);
+    _inputModeButton->setFont(compactControlFont);
     _inputModeButton->setToolTip(QStringLiteral("当前发送类型为文本，点击切换为HEX"));
 
     _sendButton = new ElaPushButton(QStringLiteral("Send"), this);
-    _sendButton->setMinimumWidth(76);
+    _sendButton->setFixedSize(65, 30);
+    _sendButton->setFont(compactControlFont);
     _sendButton->setEnabled(false);
 
-    _multiSendToggleButton = new ElaPushButton(QStringLiteral("多字符串"), this);
-    _multiSendToggleButton->setCheckable(true);
-    _multiSendToggleButton->setMinimumWidth(88);
-    _multiSendToggleButton->setToolTip(QStringLiteral("展开或折叠右侧多字符串发送配置"));
+    auto* checksumLabel = new ElaText(QStringLiteral("校验"), this);
+    checksumLabel->setTextPixelSize(11);
 
-    auto* sendConfigLabel = new ElaText(QStringLiteral("发送"), this);
-    sendConfigLabel->setTextPixelSize(13);
-    sendConfigLabel->setFixedWidth(42);
+    auto* suffixLabel = new ElaText(QStringLiteral("结束符"), this);
+    suffixLabel->setTextPixelSize(11);
+
+    auto* inputModeLabel = new ElaText(QStringLiteral("模式"), this);
+    inputModeLabel->setTextPixelSize(11);
 
     _continuousSendCheckBox = new ElaCheckBox(QStringLiteral("连续发送"), this);
+    _continuousSendCheckBox->setFixedHeight(30);
+    _continuousSendCheckBox->setFont(compactControlFont);
     _continuousSendCheckBox->setEnabled(false);
 
     auto* sendIntervalLabel = new ElaText(QStringLiteral("间隔(ms)"), this);
-    sendIntervalLabel->setTextPixelSize(13);
+    sendIntervalLabel->setTextPixelSize(11);
 
     _sendIntervalEdit = new ElaLineEdit(this);
     _sendIntervalEdit->setText(QStringLiteral("1000"));
     _sendIntervalEdit->setValidator(new QIntValidator(10, 600000, _sendIntervalEdit));
-    _sendIntervalEdit->setFixedWidth(72);
+    _sendIntervalEdit->setFixedSize(61, 30);
+    _sendIntervalEdit->setFont(compactControlFont);
     _sendIntervalEdit->setAlignment(Qt::AlignCenter);
     _sendIntervalEdit->setToolTip(QStringLiteral("连续发送间隔，范围10～600000毫秒"));
 
     transmitLayout->addWidget(textInputLabel, 0, 0);
-    transmitLayout->addWidget(_textTransmitEdit, 0, 1, 1, 8);
+    transmitLayout->addWidget(_textTransmitEdit, 0, 1);
     transmitLayout->addWidget(hexInputLabel, 1, 0);
-    transmitLayout->addWidget(_hexTransmitEdit, 1, 1, 1, 8);
-    auto* sendOptionsWidget = new ResponsiveRowWidget(this);
-    sendOptionsWidget->addResponsiveWidget(sendConfigLabel, 0, 0, 0);
-    sendOptionsWidget->addResponsiveWidget(_checksumComboBox, 1, 0, 1);
-    sendOptionsWidget->addResponsiveWidget(_suffixComboBox, 2, 0, 2);
-    sendOptionsWidget->addResponsiveWidget(_inputModeButton, 3, 0, 3);
-    sendOptionsWidget->addResponsiveWidget(_continuousSendCheckBox, 4, 0, 4);
-    sendOptionsWidget->addResponsiveWidget(sendIntervalLabel, 5, 1, 0);
-    sendOptionsWidget->addResponsiveWidget(_sendIntervalEdit, 6, 1, 1);
-    sendOptionsWidget->addResponsiveWidget(_sendButton, 7, 1, 2);
-    sendOptionsWidget->addResponsiveWidget(_multiSendToggleButton, 8, 1, 3);
-    transmitLayout->addWidget(sendOptionsWidget, 2, 0, 1, 9);
+    transmitLayout->addWidget(_hexTransmitEdit, 1, 1);
+    transmitLayout->addWidget(checksumLabel, 2, 0);
+    transmitLayout->addWidget(_checksumComboBox, 2, 1);
+    transmitLayout->addWidget(suffixLabel, 3, 0);
+    transmitLayout->addWidget(_suffixComboBox, 3, 1);
+    transmitLayout->addWidget(inputModeLabel, 4, 0);
+    transmitLayout->addWidget(_inputModeButton, 4, 1, Qt::AlignLeft);
+    transmitLayout->addWidget(_continuousSendCheckBox, 5, 1, Qt::AlignLeft);
+    transmitLayout->addWidget(sendIntervalLabel, 6, 0);
+    transmitLayout->addWidget(_sendIntervalEdit, 6, 1, Qt::AlignLeft);
+    transmitLayout->addWidget(_sendButton, 7, 1, Qt::AlignLeft);
     transmitLayout->setColumnStretch(1, 1);
+    transmitLayout->setRowStretch(8, 1);
 
     auto* statusLayout = new QHBoxLayout();
     statusLayout->setContentsMargins(12, 0, 4, 0);
@@ -515,17 +560,61 @@ void MonitorPage::buildUi()
     monitorLayout->setSpacing(8);
     monitorLayout->addWidget(displayToolbarWidget);
     monitorLayout->addWidget(_trafficView, 1);
-    monitorLayout->addLayout(transmitLayout);
     monitorLayout->addLayout(statusLayout);
 
-    _multiSendPanel = buildMultiSendPanel();
-    _multiSendPanel->setVisible(false);
+    auto* trafficSearchPanel = new QWidget(this);
+    auto* trafficSearchLayout = new QVBoxLayout(trafficSearchPanel);
+    trafficSearchLayout->setContentsMargins(0, 0, 0, 0);
+    trafficSearchLayout->setSpacing(7);
+
+    _trafficSearchEdit = new ElaLineEdit(trafficSearchPanel);
+    _trafficSearchEdit->setFixedHeight(30);
+    _trafficSearchEdit->setFont(compactControlFont);
+    _trafficSearchEdit->setPlaceholderText(QStringLiteral("搜索接收报文"));
+    _trafficSearchEdit->setClearButtonEnabled(true);
+    _trafficSearchEdit->setToolTip(QStringLiteral("输入关键字搜索，点击下方结果定位到对应报文"));
+
+    _trafficSearchResults = new ElaListView(trafficSearchPanel);
+    _trafficSearchResults->setItemHeight(40);
+    _trafficSearchResults->setIsTransparent(true);
+    _trafficSearchResults->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    _trafficSearchResults->setSelectionMode(QAbstractItemView::SingleSelection);
+    _trafficSearchResults->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    _trafficSearchResults->setTextElideMode(Qt::ElideRight);
+    _trafficSearchResultsModel = new QStandardItemModel(_trafficSearchResults);
+    _trafficSearchResults->setModel(_trafficSearchResultsModel);
+
+    trafficSearchLayout->addWidget(_trafficSearchEdit);
+    trafficSearchLayout->addWidget(_trafficSearchResults, 1);
+
+    auto* sidePanel = new QFrame(this);
+    sidePanel->setFrameShape(QFrame::StyledPanel);
+    sidePanel->setMinimumWidth(320);
+    auto* sidePanelLayout = new QVBoxLayout(sidePanel);
+    sidePanelLayout->setContentsMargins(8, 7, 8, 8);
+    sidePanelLayout->setSpacing(7);
+
+    _sidePanelPivot = new ElaPivot(sidePanel);
+    _sidePanelPivot->setFixedHeight(34);
+    _sidePanelPivot->setTextPixelSize(14);
+    _sidePanelPivot->setPivotSpacing(10);
+    _sidePanelPivot->setMarkWidth(64);
+    _sidePanelPivot->appendPivot(QStringLiteral("单词发送"));
+    _sidePanelPivot->appendPivot(QStringLiteral("多字符串发送"));
+    _sidePanelPivot->appendPivot(QStringLiteral("报文搜索"));
+
+    _sidePanelStackedWidget = new QStackedWidget(sidePanel);
+    _sidePanelStackedWidget->addWidget(singleSendPanel);
+    _sidePanelStackedWidget->addWidget(buildMultiSendPanel());
+    _sidePanelStackedWidget->addWidget(trafficSearchPanel);
+    sidePanelLayout->addWidget(_sidePanelPivot);
+    sidePanelLayout->addWidget(_sidePanelStackedWidget, 1);
 
     _contentSplitter = new QSplitter(Qt::Horizontal, this);
     _contentSplitter->setChildrenCollapsible(false);
     _contentSplitter->setHandleWidth(8);
     _contentSplitter->addWidget(monitorWidget);
-    _contentSplitter->addWidget(_multiSendPanel);
+    _contentSplitter->addWidget(sidePanel);
     _contentSplitter->setStretchFactor(0, 1);
     _contentSplitter->setStretchFactor(1, 0);
     _contentSplitter->setSizes({820, 320});
@@ -546,8 +635,8 @@ void MonitorPage::buildUi()
     connect(_pauseScrollButton, &ElaToolButton::toggled, this, &MonitorPage::handlePauseScrollToggled);
     connect(clearButton, &ElaIconButton::clicked, this, &MonitorPage::clearTraffic);
     connect(_sendButton, &ElaPushButton::clicked, this, &MonitorPage::handleSendClicked);
-    connect(_multiSendToggleButton, &ElaPushButton::toggled,
-            this, &MonitorPage::handleMultiSendToggled);
+    connect(_sidePanelPivot, &ElaPivot::pivotClicked,
+            this, &MonitorPage::handleSidePanelPageChanged);
     connect(_textTransmitEdit, &ElaLineEdit::textChanged, this, &MonitorPage::handleTextTransmitChanged);
     connect(_hexTransmitEdit, &ElaLineEdit::textChanged, this, &MonitorPage::handleHexTransmitChanged);
     connect(_textTransmitEdit, &ElaLineEdit::returnPressed, this, &MonitorPage::handleSendClicked);
@@ -562,6 +651,26 @@ void MonitorPage::buildUi()
             this, &MonitorPage::handleContinuousSendToggled);
     connect(_contentSplitter, &QSplitter::splitterMoved, this, [this](int, int) {
         saveSettings();
+    });
+
+    _trafficSearchTimer = new QTimer(this);
+    _trafficSearchTimer->setSingleShot(true);
+    _trafficSearchTimer->setInterval(100);
+    connect(_trafficSearchTimer, &QTimer::timeout, this, &MonitorPage::updateTrafficSearch);
+    connect(_trafficSearchEdit, &ElaLineEdit::textChanged, this, [this](const QString& text) {
+        _trafficSearchQuery = text.trimmed();
+        _trafficSearchTimer->start();
+    });
+    connect(_trafficSearchEdit, &ElaLineEdit::returnPressed, this, [this] {
+        if (_trafficSearchResultsModel->rowCount() > 0)
+        {
+            const QModelIndex firstResult = _trafficSearchResultsModel->index(0, 0);
+            _trafficSearchResults->setCurrentIndex(firstResult);
+            locateTrafficSearchResult(firstResult.data(Qt::UserRole).toInt());
+        }
+    });
+    connect(_trafficSearchResults, &ElaListView::clicked, this, [this](const QModelIndex& index) {
+        locateTrafficSearchResult(index.data(Qt::UserRole).toInt());
     });
 
     _rateTimer = new QTimer(this);
@@ -669,17 +778,20 @@ ElaToolBar* MonitorPage::buildSerialToolBar()
 *****************************************************/
 QWidget* MonitorPage::buildMultiSendPanel()
 {
-    auto* panel = new QFrame(this);
-    panel->setFrameShape(QFrame::StyledPanel);
-    panel->setMinimumWidth(220);
-    panel->setMaximumWidth(QWIDGETSIZE_MAX);
+    auto* panel = new QWidget(this);
+    QFont compactControlFont = font();
+    if (compactControlFont.pointSizeF() > 0)
+    {
+        compactControlFont.setPointSizeF(compactControlFont.pointSizeF() * 0.85);
+    }
+    else if (compactControlFont.pixelSize() > 0)
+    {
+        compactControlFont.setPixelSize(qMax(1, qRound(compactControlFont.pixelSize() * 0.85)));
+    }
 
     auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(10, 10, 10, 10);
-    layout->setSpacing(8);
-
-    auto* title = new ElaText(QStringLiteral("多字符串发送"), 16, panel);
-    layout->addWidget(title);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
 
     auto* scrollArea = new ElaScrollArea(panel);
     scrollArea->setWidgetResizable(true);
@@ -689,29 +801,33 @@ QWidget* MonitorPage::buildMultiSendPanel()
     auto* listWidget = new QWidget(scrollArea);
     auto* listLayout = new QVBoxLayout(listWidget);
     listLayout->setContentsMargins(0, 0, 4, 0);
-    listLayout->setSpacing(8);
+    listLayout->setSpacing(7);
 
     constexpr int quickSendItemCount = 50;
     for (int index = 0; index < quickSendItemCount; ++index)
     {
         auto* rowLayout = new QHBoxLayout();
         rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(6);
+        rowLayout->setSpacing(5);
 
         QuickSendItem item;
         item.modeComboBox = new ElaComboBox(listWidget);
         item.modeComboBox->addItem(QStringLiteral("ABC"), 0);
         item.modeComboBox->addItem(QStringLiteral("HEX"), 1);
-        item.modeComboBox->setFixedWidth(88);
+        item.modeComboBox->setFixedSize(75, 30);
+        item.modeComboBox->setFont(compactControlFont);
 
         item.contentEdit = new ElaLineEdit(listWidget);
         item.contentEdit->setPlaceholderText(QStringLiteral("字符串 %1").arg(index + 1));
         item.contentEdit->setClearButtonEnabled(true);
+        item.contentEdit->setFixedHeight(30);
+        item.contentEdit->setFont(compactControlFont);
         item.hexValidator = new QRegularExpressionValidator(
             QRegularExpression(QStringLiteral("^[0-9A-Fa-f\\s]*$")), item.contentEdit);
 
         item.sendButton = new ElaPushButton(QStringLiteral("发送"), listWidget);
-        item.sendButton->setFixedWidth(56);
+        item.sendButton->setFixedSize(48, 30);
+        item.sendButton->setFont(compactControlFont);
         item.sendButton->setEnabled(false);
 
         rowLayout->addWidget(item.modeComboBox);
@@ -803,9 +919,13 @@ void MonitorPage::loadSettings()
         item.contentEdit->setText(settings.value(keyPrefix + QStringLiteral("content")).toString());
     }
 
-    _multiSendToggleButton->setChecked(
-        settings.value(QStringLiteral("quickSend/expanded"), false).toBool());
-    const QByteArray splitterState = settings.value(QStringLiteral("layout/contentSplitter")).toByteArray();
+    const int legacySendMode = settings.value(QStringLiteral("quickSend/expanded"), false).toBool() ? 1 : 0;
+    const int legacySidePanelPage = settings.value(QStringLiteral("layout/sendMode"), legacySendMode).toInt();
+    const int sidePanelPage = qBound(
+        0, settings.value(QStringLiteral("layout/sidePanelPage"), legacySidePanelPage).toInt(), 2);
+    _sidePanelPivot->setCurrentIndex(sidePanelPage);
+    _sidePanelStackedWidget->setCurrentIndex(sidePanelPage);
+    const QByteArray splitterState = settings.value(QStringLiteral("layout/contentSplitterV2")).toByteArray();
     if (!splitterState.isEmpty() && _contentSplitter)
     {
         _contentSplitter->restoreState(splitterState);
@@ -846,11 +966,14 @@ void MonitorPage::saveSettings()
     settings.setValue(QStringLiteral("transmit/interval"), sendInterval());
     settings.setValue(QStringLiteral("transmit/checksum"), _checksumComboBox->currentData());
     settings.setValue(QStringLiteral("transmit/suffix"), _suffixComboBox->currentData());
-    settings.setValue(QStringLiteral("quickSend/expanded"), _multiSendToggleButton->isChecked());
+    settings.setValue(QStringLiteral("layout/sidePanelPage"), _sidePanelStackedWidget->currentIndex());
+    settings.remove(QStringLiteral("layout/sendMode"));
+    settings.remove(QStringLiteral("quickSend/expanded"));
     if (_contentSplitter)
     {
-        settings.setValue(QStringLiteral("layout/contentSplitter"), _contentSplitter->saveState());
+        settings.setValue(QStringLiteral("layout/contentSplitterV2"), _contentSplitter->saveState());
     }
+    settings.remove(QStringLiteral("layout/contentSplitter"));
     for (int index = 0; index < _quickSendItems.size(); ++index)
     {
         const QuickSendItem& item = _quickSendItems.at(index);
@@ -897,9 +1020,6 @@ void MonitorPage::connectSettingsSignals()
     }
 
     connect(_inputModeButton, &ElaPushButton::toggled, this, [this](bool) {
-        saveSettings();
-    });
-    connect(_multiSendToggleButton, &ElaPushButton::toggled, this, [this](bool) {
         saveSettings();
     });
     connect(_frameTimeoutEdit, &ElaLineEdit::editingFinished,
@@ -1246,15 +1366,20 @@ void MonitorPage::handleFrameTimeoutEditingFinished()
 }
 
 /*****************************************************
-函数名称：void MonitorPage::handleMultiSendToggled(bool expanded)
-入口参数：expanded为右侧多字符串区域是否展开
+函数名称：void MonitorPage::handleSidePanelPageChanged(int index)
+入口参数：index为右侧页面序号，0为单词发送，1为多字符串发送，2为报文搜索
 出口参数：无
-函数功能：切换多字符串发送配置区域的显示状态
+函数功能：使用ElaPivot切换右侧共享空间显示的发送或报文搜索页面并保存选择
 *****************************************************/
-void MonitorPage::handleMultiSendToggled(bool expanded)
+void MonitorPage::handleSidePanelPageChanged(int index)
 {
-    _multiSendPanel->setVisible(expanded);
-    _multiSendToggleButton->setText(expanded ? QStringLiteral("收起预设") : QStringLiteral("多字符串"));
+    if (index < 0 || index >= _sidePanelStackedWidget->count())
+    {
+        return;
+    }
+
+    _sidePanelStackedWidget->setCurrentIndex(index);
+    saveSettings();
 }
 
 /*****************************************************
@@ -1333,12 +1458,15 @@ void MonitorPage::handleSendIntervalEditingFinished()
 void MonitorPage::clearTraffic()
 {
     _trafficRecords.clear();
+    _trafficSearchResultsModel->clear();
+    _nextTrafficSearchBlockId = 0;
     _trafficView->clear();
     _rxBytes = 0;
     _txBytes = 0;
     _lastRxBytes = 0;
     _lastTxBytes = 0;
     updateTransferRate();
+    updateTrafficSearch();
 }
 
 /*****************************************************
@@ -1351,6 +1479,8 @@ void MonitorPage::renderTraffic()
 {
     QScrollBar* scrollBar = _trafficView->verticalScrollBar();
     const int lockedScrollPosition = scrollBar->value();
+    const bool searchActive = !_trafficSearchQuery.isEmpty();
+    _nextTrafficSearchBlockId = 0;
     _trafficView->setUpdatesEnabled(false);
     _trafficView->clear();
     for (const TrafficRecord& record : _trafficRecords)
@@ -1362,9 +1492,10 @@ void MonitorPage::renderTraffic()
         appendFormattedTraffic(record);
     }
     _trafficView->setUpdatesEnabled(true);
-    scrollBar->setValue(_pauseScrollButton->isChecked()
+    scrollBar->setValue((_pauseScrollButton->isChecked() || searchActive)
         ? qMin(lockedScrollPosition, scrollBar->maximum())
         : scrollBar->maximum());
+    updateTrafficSearch();
 }
 
 /*****************************************************
@@ -1470,7 +1601,112 @@ void MonitorPage::updateTransferRate()
                                .arg(rxRate)
                                .arg(_rxBytes)
                                .arg(txRate)
-                               .arg(_txBytes));
+                                .arg(_txBytes));
+}
+
+/*****************************************************
+函数名称：void MonitorPage::updateTrafficSearch()
+入口参数：无
+出口参数：无
+函数功能：高亮接收窗口内的全部命中内容并将命中报文更新到Ela列表
+*****************************************************/
+void MonitorPage::updateTrafficSearch()
+{
+    const QModelIndex previousIndex = _trafficSearchResults->currentIndex();
+    const int previousBlockId = previousIndex.isValid()
+        ? previousIndex.data(Qt::UserRole).toInt()
+        : -1;
+
+    QList<QTextBlock> matchingBlocks;
+    QSet<int> matchingBlockIds;
+    QList<QTextEdit::ExtraSelection> highlightedSelections;
+    if (!_trafficSearchQuery.isEmpty())
+    {
+        QTextCursor searchCursor(_trafficView->document());
+        while (true)
+        {
+            const QTextCursor matchCursor = _trafficView->document()->find(_trafficSearchQuery, searchCursor);
+            if (matchCursor.isNull())
+            {
+                break;
+            }
+
+            searchCursor = matchCursor;
+
+            const QTextBlock block = matchCursor.block();
+            if (block.isValid() && block.userState() >= 0
+                && !matchingBlockIds.contains(block.userState()))
+            {
+                matchingBlockIds.insert(block.userState());
+                matchingBlocks.append(block);
+            }
+
+            QTextEdit::ExtraSelection selection;
+            selection.cursor = matchCursor;
+            selection.format.setBackground(QColor(QStringLiteral("#FFF2A8")));
+            highlightedSelections.append(selection);
+        }
+    }
+
+    _trafficView->setExtraSelections(highlightedSelections);
+    _trafficSearchResultsModel->clear();
+
+    int selectedRow = -1;
+    for (const QTextBlock& block : matchingBlocks)
+    {
+        const QString resultText = block.text().simplified();
+        if (resultText.isEmpty())
+        {
+            continue;
+        }
+
+        auto* resultItem = new QStandardItem(resultText);
+        resultItem->setEditable(false);
+        resultItem->setToolTip(block.text());
+        resultItem->setData(block.userState(), Qt::UserRole);
+        _trafficSearchResultsModel->appendRow(resultItem);
+        if (block.userState() == previousBlockId)
+        {
+            selectedRow = _trafficSearchResultsModel->rowCount() - 1;
+        }
+    }
+
+    if (selectedRow >= 0)
+    {
+        _trafficSearchResults->setCurrentIndex(
+            _trafficSearchResultsModel->index(selectedRow, 0));
+    }
+}
+
+/*****************************************************
+函数名称：void MonitorPage::locateTrafficSearchResult(int blockId)
+入口参数：blockId为搜索结果对应的接收文档块标识
+出口参数：无
+函数功能：按稳定文档块标识查找报文并将接收窗口滚动到该报文位置
+*****************************************************/
+void MonitorPage::locateTrafficSearchResult(int blockId)
+{
+    if (blockId < 0)
+    {
+        return;
+    }
+
+    for (QTextBlock block = _trafficView->document()->begin(); block.isValid(); block = block.next())
+    {
+        if (block.userState() == blockId)
+        {
+            QTextCursor cursor(block);
+            const int matchOffset = block.text().indexOf(
+                _trafficSearchQuery, 0, Qt::CaseInsensitive);
+            if (matchOffset >= 0)
+            {
+                cursor.setPosition(block.position() + matchOffset);
+            }
+            _trafficView->setTextCursor(cursor);
+            _trafficView->centerCursor();
+            return;
+        }
+    }
 }
 
 /*****************************************************
@@ -1655,10 +1891,15 @@ void MonitorPage::appendTraffic(bool received, const QByteArray& data)
     {
         QScrollBar* scrollBar = _trafficView->verticalScrollBar();
         const int lockedScrollPosition = scrollBar->value();
+        const bool searchActive = !_trafficSearchQuery.isEmpty();
         appendFormattedTraffic(record);
-        scrollBar->setValue(_pauseScrollButton->isChecked()
+        scrollBar->setValue((_pauseScrollButton->isChecked() || searchActive)
             ? qMin(lockedScrollPosition, scrollBar->maximum())
             : scrollBar->maximum());
+        if (searchActive)
+        {
+            _trafficSearchTimer->start();
+        }
     }
 
     if (_logButton->isChecked())
@@ -1691,6 +1932,8 @@ void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
     // Windows文本剪贴板以空字符结尾，直接保留0x00会导致全选复制在此处截断。
     textContent.replace(QChar::Null, QStringLiteral("\\x00"));
 
+    const QString timestamp = record.timestamp.toString(QStringLiteral("HH:mm:ss.zzz"));
+
     QTextCharFormat defaultFormat;
     defaultFormat.setForeground(_trafficView->palette().color(QPalette::Text));
 
@@ -1718,10 +1961,11 @@ void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
         cursor.setCharFormat(defaultFormat);
         cursor.insertBlock();
     }
+    const QTextBlock firstRecordBlock = cursor.block();
 
     if (_timeButton->isChecked())
     {
-        cursor.insertText(QStringLiteral("[%1]").arg(record.timestamp.toString(QStringLiteral("HH:mm:ss.zzz"))),
+        cursor.insertText(QStringLiteral("[%1]").arg(timestamp),
                           timeFormat);
         cursor.insertText(QStringLiteral(" "), defaultFormat);
     }
@@ -1750,6 +1994,16 @@ void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
 
     cursor.setCharFormat(defaultFormat);
     _trafficView->setTextCursor(cursor);
+
+    const QTextBlock lastRecordBlock = cursor.block();
+    for (QTextBlock block = firstRecordBlock; block.isValid(); block = block.next())
+    {
+        block.setUserState(_nextTrafficSearchBlockId++);
+        if (block == lastRecordBlock)
+        {
+            break;
+        }
+    }
 }
 
 /*****************************************************
