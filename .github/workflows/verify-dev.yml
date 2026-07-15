@@ -1,0 +1,42 @@
+name: Verify development branch
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Initialize MSVC build environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.6.3
+          arch: win64_msvc2019_64
+          modules: qtserialport
+
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          cmake -S . -B build/verify -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DQt6_DIR=$env:QT_ROOT_DIR/lib/cmake/Qt6" `
+            -DCOMMUNICATION_ANALYZER_RUN_AFTER_BUILD=OFF
+          cmake --build build/verify --config Release --parallel
