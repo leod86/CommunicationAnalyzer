@@ -15,7 +15,7 @@
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
-    QCoreApplication::setApplicationName(QStringLiteral("CommunicationAnalyzer"));
+    QCoreApplication::setApplicationName(QStringLiteral("通讯协议分析仪"));
     QCoreApplication::setOrganizationName(QStringLiteral("CommunicationAnalyzer"));
     QCoreApplication::setApplicationVersion(QStringLiteral(COMMUNICATION_ANALYZER_VERSION));
 

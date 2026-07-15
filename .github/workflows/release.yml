@@ -35,25 +35,27 @@ jobs:
 
       - name: Build MSI
         shell: pwsh
-        env:
-          RELEASE_VERSION: 0.1.${{ github.run_number }}
         run: |
           cmake -S . -B build/release -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCOMMUNICATION_ANALYZER_RUN_AFTER_BUILD=OFF `
-            "-DQt6_DIR=$env:QT_ROOT_DIR/lib/cmake/Qt6" `
-            "-DCOMMUNICATION_ANALYZER_VERSION=$env:RELEASE_VERSION"
+            "-DQt6_DIR=$env:QT_ROOT_DIR/lib/cmake/Qt6"
           cmake --build build/release --config Release --parallel
           cpack --config build/release/CPackConfig.cmake -G WIX -B artifact
           $installer = Get-Item artifact/CommunicationAnalyzer-x64.msi
           $checksum = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -LiteralPath "$($installer.FullName).sha256" -Value $checksum -NoNewline
+          $releaseVersion = (Select-String -Path build/release/CPackConfig.cmake -Pattern '^set\(CPACK_PACKAGE_VERSION "([0-9]+\.[0-9]+\.[0-9]+)"\)' | Select-Object -First 1).Matches.Groups[1].Value
+          if ([string]::IsNullOrWhiteSpace($releaseVersion)) {
+            throw 'Unable to determine the release version from CPackConfig.cmake.'
+          }
+          "RELEASE_VERSION=$releaseVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.${{ github.run_number }}
-          name: CommunicationAnalyzer v0.1.${{ github.run_number }}
+          tag_name: v${{ env.RELEASE_VERSION }}
+          name: 通讯协议分析仪 v${{ env.RELEASE_VERSION }}
           generate_release_notes: true
           overwrite_files: true
           files: |

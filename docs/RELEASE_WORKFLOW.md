@@ -12,7 +12,8 @@
 
 ## 版本与安装包
 
-Release 工作流使用 `0.1.<GitHub Run Number>` 作为 MSI 和应用程序版本，发布以下固定文件名：
+Release 工作流使用 `CMakeLists.txt` 中定义的应用程序版本。首次正式版为 `v1.1.1`；后续每次
+发布前，在 `dev` 分支递增 `project(CommunicationAnalyzer VERSION x.y.z)` 中的版本号。
 
 - `CommunicationAnalyzer-x64.msi`
 - `CommunicationAnalyzer-x64.msi.sha256`
