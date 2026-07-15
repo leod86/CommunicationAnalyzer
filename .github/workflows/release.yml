@@ -61,3 +61,11 @@ jobs:
           files: |
             artifact/CommunicationAnalyzer-x64.msi
             artifact/CommunicationAnalyzer-x64.msi.sha256
+
+      - name: Upload WiX diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix-diagnostics
+          path: artifact/_CPack_Packages/win64/WIX
+          if-no-files-found: warn
