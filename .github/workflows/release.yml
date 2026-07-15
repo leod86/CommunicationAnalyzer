@@ -19,12 +19,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Qt and MinGW
+      - name: Initialize MSVC build environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: 6.6.3
-          arch: win64_mingw
-          tools: tools_mingw1120
+          arch: win64_msvc2019_64
 
       - name: Install WiX Toolset v3
         shell: pwsh
@@ -37,8 +39,6 @@ jobs:
         run: |
           cmake -S . -B build/release -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=gcc `
-            -DCMAKE_CXX_COMPILER=g++ `
             -DCOMMUNICATION_ANALYZER_RUN_AFTER_BUILD=OFF `
             "-DCOMMUNICATION_ANALYZER_VERSION=$env:RELEASE_VERSION"
           cmake --build build/release --config Release --parallel
