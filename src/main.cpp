@@ -1,7 +1,10 @@
 #include <QApplication>
+#include <QCoreApplication>
+#include <QTimer>
 
 #include "ElaApplication.h"
 #include "app/MainWindow.h"
+#include "update/UpdateManager.h"
 
 /*****************************************************
 函数名称：int main(int argc, char *argv[])
@@ -12,6 +15,9 @@
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
+    QCoreApplication::setApplicationName(QStringLiteral("CommunicationAnalyzer"));
+    QCoreApplication::setOrganizationName(QStringLiteral("CommunicationAnalyzer"));
+    QCoreApplication::setApplicationVersion(QStringLiteral(COMMUNICATION_ANALYZER_VERSION));
 
     // 初始化Ela全局应用对象。
     eApp->init();
@@ -19,6 +25,12 @@ int main(int argc, char* argv[])
     // 创建并显示通讯分析主窗口。
     MainWindow mainWindow;
     mainWindow.show();
+
+    // 主窗口显示后检查更新，避免网络请求阻塞程序首帧。
+    auto* updateManager = new UpdateManager(&application);
+    QTimer::singleShot(0, updateManager, [updateManager]() {
+        updateManager->checkForUpdates();
+    });
 
     return application.exec();
 }

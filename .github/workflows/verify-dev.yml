@@ -1,0 +1,40 @@
+name: Verify development branch
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Qt and MinGW
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.6.3
+          arch: win64_mingw
+          tools: tools_mingw1120
+
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          cmake -S . -B build/verify -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=gcc `
+            -DCMAKE_CXX_COMPILER=g++ `
+            -DCOMMUNICATION_ANALYZER_RUN_AFTER_BUILD=OFF
+          cmake --build build/verify --config Release --parallel
