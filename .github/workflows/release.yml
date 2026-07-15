@@ -40,6 +40,7 @@ jobs:
           cmake -S . -B build/release -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCOMMUNICATION_ANALYZER_RUN_AFTER_BUILD=OFF `
+            "-DQt6_DIR=$env:QT_ROOT_DIR/lib/cmake/Qt6" `
             "-DCOMMUNICATION_ANALYZER_VERSION=$env:RELEASE_VERSION"
           cmake --build build/release --config Release --parallel
           cpack --config build/release/CPackConfig.cmake -G WIX -B artifact
