@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 cmake_policy(SET CMP0087 NEW)
 
-project(CommunicationAnalyzer VERSION 0.1.0 LANGUAGES CXX)
+project(CommunicationAnalyzer VERSION 1.1.1 LANGUAGES CXX)
 
 set(COMMUNICATION_ANALYZER_VERSION "${PROJECT_VERSION}" CACHE STRING
     "Three-part version used by the application and the MSI package"
@@ -12,7 +12,7 @@ set(COMMUNICATION_ANALYZER_UPDATE_REPOSITORY "leod86/CommunicationAnalyzer" CACH
 
 if(NOT COMMUNICATION_ANALYZER_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR
-        "COMMUNICATION_ANALYZER_VERSION must contain exactly three numeric parts, for example 0.1.0"
+        "COMMUNICATION_ANALYZER_VERSION must contain exactly three numeric parts, for example 1.1.1"
     )
 endif()
 
@@ -129,14 +129,17 @@ if(WIN32 AND COMMUNICATION_ANALYZER_RUN_AFTER_BUILD)
 endif()
 
 set(CPACK_GENERATOR "WIX")
-set(CPACK_PACKAGE_NAME "CommunicationAnalyzer")
+set(CPACK_PACKAGE_NAME "通讯协议分析仪")
 set(CPACK_PACKAGE_VENDOR "leod86")
 set(CPACK_PACKAGE_VERSION "${COMMUNICATION_ANALYZER_VERSION}")
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "CommunicationAnalyzer")
 set(CPACK_PACKAGE_FILE_NAME "CommunicationAnalyzer-x64")
+set(CPACK_PACKAGE_EXECUTABLES "CommunicationAnalyzer" "通讯协议分析仪")
+set(CPACK_CREATE_DESKTOP_LINKS "CommunicationAnalyzer")
 set(CPACK_WIX_VERSION 3)
 set(CPACK_WIX_UPGRADE_GUID "F6E4B037-4441-4097-8FAB-C50C9F8B1168")
 set(CPACK_WIX_UI_REF "WixUI_InstallDir")
+set(CPACK_WIX_PROGRAM_MENU_FOLDER "通讯协议分析仪")
 set(CPACK_WIX_PROPERTY_ARPURLINFOABOUT
     "https://github.com/${COMMUNICATION_ANALYZER_UPDATE_REPOSITORY}"
 )

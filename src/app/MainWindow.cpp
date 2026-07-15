@@ -46,7 +46,7 @@ void MainWindow::initializeWindow()
     // 配置主窗口基础属性。
     resize(1000, 650);
     setMinimumSize(520, 360);
-    setWindowTitle(QStringLiteral("通讯分析器"));
+    setWindowTitle(QStringLiteral("通讯协议分析仪"));
     setUserInfoCardVisible(false);
     setNavigationBarDisplayMode(ElaNavigationType::Auto);
 
