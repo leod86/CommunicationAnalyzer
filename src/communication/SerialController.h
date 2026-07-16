@@ -1,6 +1,7 @@
 #ifndef SERIALCONTROLLER_H
 #define SERIALCONTROLLER_H
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QSerialPort>
 #include <QStringList>
@@ -55,6 +56,7 @@ private:
     QSerialPort _serialPort;
     QTimer _portMonitorTimer;
     QTimer _frameTimer;
+    QElapsedTimer _frameStartTimer;
     QByteArray _receiveBuffer;
     int _frameTimeoutMilliseconds{20};
     QStringList _lastPortNames;
