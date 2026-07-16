@@ -32,7 +32,11 @@ jobs:
           arch: win64_msvc2019_64
           modules: qtserialport
 
-      - name: Configure and build
+      - name: Install WiX Toolset v3
+        shell: pwsh
+        run: choco install wixtoolset --no-progress --limit-output --yes
+
+      - name: Configure, build and package
         shell: pwsh
         run: |
           cmake -S . -B build/verify -G Ninja `
@@ -40,3 +44,4 @@ jobs:
             "-DQt6_DIR=$env:QT_ROOT_DIR/lib/cmake/Qt6" `
             -DCOMMUNICATION_ANALYZER_RUN_AFTER_BUILD=OFF
           cmake --build build/verify --config Release --parallel
+          cpack --config build/verify/CPackConfig.cmake -G WIX -B artifact
