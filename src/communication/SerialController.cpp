@@ -4,6 +4,14 @@
 
 #include <algorithm>
 
+namespace
+{
+// 连续数据流的最长聚合时间，保证界面周期性刷新。
+constexpr int kMaximumFrameAccumulationMilliseconds = 500;
+// 单个显示批次的最大缓存字节数，避免持续流耗尽内存。
+constexpr qsizetype kMaximumFrameBytes = 64 * 1024;
+}
+
 /*****************************************************
 函数名称：SerialController::SerialController(QObject* parent)
 入口参数：parent为父对象
@@ -101,6 +109,7 @@ void SerialController::openPort(const QString& portName, qint32 baudRate, int da
         _serialPort.close();
     }
     _frameTimer.stop();
+    _frameStartTimer.invalidate();
     _receiveBuffer.clear();
 
     _serialPort.setPortName(portName);
@@ -202,7 +211,19 @@ void SerialController::handleReadyRead()
         return;
     }
 
+    if (_receiveBuffer.isEmpty())
+    {
+        _frameStartTimer.start();
+    }
     _receiveBuffer.append(receivedData);
+
+    if (_receiveBuffer.size() >= kMaximumFrameBytes
+        || _frameStartTimer.elapsed() >= kMaximumFrameAccumulationMilliseconds)
+    {
+        flushReceivedFrame();
+        return;
+    }
+
     _frameTimer.start(_frameTimeoutMilliseconds);
 }
 
@@ -217,11 +238,13 @@ void SerialController::flushReceivedFrame()
     _frameTimer.stop();
     if (_receiveBuffer.isEmpty())
     {
+        _frameStartTimer.invalidate();
         return;
     }
 
     const QByteArray completeFrame = _receiveBuffer;
     _receiveBuffer.clear();
+    _frameStartTimer.invalidate();
     emit dataReceived(completeFrame);
 }
 
