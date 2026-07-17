@@ -7,12 +7,15 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QProgressDialog>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QWidget>
 #include <QDebug>
 
 namespace
@@ -22,13 +25,14 @@ constexpr auto kChecksumAssetName = "CommunicationAnalyzer-x64.msi.sha256";
 }
 
 /*****************************************************
-函数名称：UpdateManager::UpdateManager(QObject* parent)
-入口参数：parent 为父对象
+函数名称：UpdateManager::UpdateManager(QWidget* parentWindow, QObject* parent)
+入口参数：parentWindow为更新提示的父窗口，parent为父对象
 出口参数：无
 函数功能：创建用于访问 GitHub Release 的更新管理器
 *****************************************************/
-UpdateManager::UpdateManager(QObject* parent)
+UpdateManager::UpdateManager(QWidget* parentWindow, QObject* parent)
     : QObject(parent)
+    , _parentWindow(parentWindow)
     , _networkManager(new QNetworkAccessManager(this))
 {
 }
@@ -77,6 +81,7 @@ QNetworkRequest UpdateManager::createRequest(const QUrl& url) const
     request.setRawHeader("User-Agent", "CommunicationAnalyzer/" COMMUNICATION_ANALYZER_VERSION);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                          QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(60'000);
     return request;
 }
 
@@ -153,12 +158,20 @@ void UpdateManager::requestInstaller(const QUrl& installerUrl)
     if (!_installerFile.open(QIODevice::WriteOnly))
     {
         discardInstaller();
+        showUpdateError(QStringLiteral("无法创建更新安装包的临时文件。"));
         return;
     }
 
+    _downloadCancelled = false;
+    showDownloadProgress();
     QNetworkReply* reply = _networkManager->get(createRequest(installerUrl));
+    _installerReply = reply;
     connect(reply, &QNetworkReply::readyRead, this, [this, reply]() {
         handleInstallerData(reply);
+    });
+    connect(reply, &QNetworkReply::downloadProgress, this,
+            [this](qint64 receivedBytes, qint64 totalBytes) {
+        updateDownloadProgress(receivedBytes, totalBytes);
     });
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         handleInstallerFinished(reply);
@@ -175,10 +188,12 @@ void UpdateManager::handleLatestReleaseReply(QNetworkReply* reply)
 {
     const QByteArray responseBody = reply->readAll();
     const QNetworkReply::NetworkError networkError = reply->error();
+    const QString errorString = reply->errorString();
     reply->deleteLater();
     if (networkError != QNetworkReply::NoError)
     {
         qWarning() << "Update check failed:" << networkError;
+        showUpdateError(QStringLiteral("无法检查更新：%1").arg(errorString));
         return;
     }
 
@@ -187,6 +202,7 @@ void UpdateManager::handleLatestReleaseReply(QNetworkReply* reply)
     if (parseError.error != QJsonParseError::NoError || !document.isObject())
     {
         qWarning() << "Update release metadata is invalid";
+        showUpdateError(QStringLiteral("更新信息格式无效。"));
         return;
     }
 
@@ -218,12 +234,14 @@ void UpdateManager::handleLatestReleaseReply(QNetworkReply* reply)
     if (!installerUrl.isValid() || !checksumUrl.isValid())
     {
         qWarning() << "Update release does not contain the required MSI assets";
+        showUpdateError(QStringLiteral("最新版本缺少安装包或校验文件。"));
         return;
     }
 
     _availableVersion = releaseVersion;
     _installerUrl = installerUrl;
-    requestChecksum(checksumUrl);
+    _checksumUrl = checksumUrl;
+    showUpdateConfirmation();
 }
 
 /*****************************************************
@@ -236,10 +254,12 @@ void UpdateManager::handleChecksumReply(QNetworkReply* reply)
 {
     const QByteArray responseBody = reply->readAll().trimmed();
     const QNetworkReply::NetworkError networkError = reply->error();
+    const QString errorString = reply->errorString();
     reply->deleteLater();
     if (networkError != QNetworkReply::NoError)
     {
         qWarning() << "Update checksum download failed:" << networkError;
+        showUpdateError(QStringLiteral("无法下载更新校验文件：%1").arg(errorString));
         return;
     }
 
@@ -249,6 +269,7 @@ void UpdateManager::handleChecksumReply(QNetworkReply* reply)
     if (!checksumMatch.hasMatch())
     {
         qWarning() << "Update checksum has an invalid format";
+        showUpdateError(QStringLiteral("更新校验文件格式无效。"));
         return;
     }
 
@@ -282,12 +303,19 @@ void UpdateManager::handleInstallerFinished(QNetworkReply* reply)
 {
     handleInstallerData(reply);
     const QNetworkReply::NetworkError networkError = reply->error();
+    const QString errorString = reply->errorString();
     reply->deleteLater();
+    _installerReply = nullptr;
     _installerFile.close();
     if (networkError != QNetworkReply::NoError)
     {
         qWarning() << "Update installer download failed:" << networkError;
         discardInstaller();
+        closeDownloadProgress();
+        if (!_downloadCancelled)
+        {
+            showUpdateError(QStringLiteral("更新安装包下载失败：%1").arg(errorString));
+        }
         return;
     }
 
@@ -295,6 +323,8 @@ void UpdateManager::handleInstallerFinished(QNetworkReply* reply)
     if (!installer.open(QIODevice::ReadOnly))
     {
         discardInstaller();
+        closeDownloadProgress();
+        showUpdateError(QStringLiteral("无法读取已下载的更新安装包。"));
         return;
     }
 
@@ -309,10 +339,126 @@ void UpdateManager::handleInstallerFinished(QNetworkReply* reply)
     {
         qWarning() << "Update installer checksum verification failed";
         discardInstaller();
+        closeDownloadProgress();
+        showUpdateError(QStringLiteral("更新安装包校验失败，已取消安装。"));
         return;
     }
 
+    closeDownloadProgress();
     installAndRestart();
+}
+
+/*****************************************************
+函数名称：void UpdateManager::showUpdateConfirmation()
+入口参数：无
+出口参数：无
+函数功能：询问用户是否下载并安装检测到的新版本
+*****************************************************/
+void UpdateManager::showUpdateConfirmation()
+{
+    const QString title = QStringLiteral("发现新版本");
+    const QString message = QStringLiteral("当前版本：v%1\n最新版本：v%2\n\n是否立即下载并安装更新？")
+                                .arg(QStringLiteral(COMMUNICATION_ANALYZER_VERSION),
+                                     _availableVersion.toString());
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        _parentWindow, title, message, QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (answer == QMessageBox::Yes)
+    {
+        requestChecksum(_checksumUrl);
+    }
+}
+
+/*****************************************************
+函数名称：void UpdateManager::showDownloadProgress()
+入口参数：无
+出口参数：无
+函数功能：显示更新安装包下载进度对话框
+*****************************************************/
+void UpdateManager::showDownloadProgress()
+{
+    if (_downloadProgressDialog == nullptr)
+    {
+        _downloadProgressDialog = new QProgressDialog(_parentWindow);
+        _downloadProgressDialog->setWindowTitle(QStringLiteral("正在下载更新"));
+        _downloadProgressDialog->setWindowModality(Qt::ApplicationModal);
+        _downloadProgressDialog->setAutoClose(false);
+        _downloadProgressDialog->setAutoReset(false);
+        _downloadProgressDialog->setMinimumDuration(0);
+        _downloadProgressDialog->setCancelButtonText(QStringLiteral("取消下载"));
+        connect(_downloadProgressDialog, &QProgressDialog::canceled,
+                this, &UpdateManager::cancelDownload);
+    }
+
+    _downloadProgressDialog->setLabelText(
+        QStringLiteral("正在下载 v%1 更新安装包…").arg(_availableVersion.toString()));
+    _downloadProgressDialog->setRange(0, 0);
+    _downloadProgressDialog->setValue(0);
+    _downloadProgressDialog->show();
+}
+
+/*****************************************************
+函数名称：void UpdateManager::updateDownloadProgress(qint64 receivedBytes, qint64 totalBytes)
+入口参数：receivedBytes为已下载字节数，totalBytes为总字节数
+出口参数：无
+函数功能：根据网络下载进度更新进度条百分比和提示文本
+*****************************************************/
+void UpdateManager::updateDownloadProgress(qint64 receivedBytes, qint64 totalBytes)
+{
+    if (_downloadProgressDialog == nullptr || totalBytes <= 0)
+    {
+        return;
+    }
+
+    const int percentage = static_cast<int>((receivedBytes * 100) / totalBytes);
+    _downloadProgressDialog->setRange(0, 100);
+    _downloadProgressDialog->setValue(percentage);
+    _downloadProgressDialog->setLabelText(
+        QStringLiteral("正在下载 v%1 更新安装包：%2%").arg(_availableVersion.toString()).arg(percentage));
+}
+
+/*****************************************************
+函数名称：void UpdateManager::closeDownloadProgress()
+入口参数：无
+出口参数：无
+函数功能：隐藏当前更新安装包下载进度对话框
+*****************************************************/
+void UpdateManager::closeDownloadProgress()
+{
+    if (_downloadProgressDialog != nullptr)
+    {
+        _downloadProgressDialog->hide();
+    }
+}
+
+/*****************************************************
+函数名称：void UpdateManager::showUpdateError(const QString& message)
+入口参数：message为需要显示的更新失败原因
+出口参数：无
+函数功能：向用户显示可见的更新失败信息
+*****************************************************/
+void UpdateManager::showUpdateError(const QString& message)
+{
+    qWarning() << message;
+    QMessageBox::warning(_parentWindow, QStringLiteral("更新失败"), message);
+}
+
+/*****************************************************
+函数名称：void UpdateManager::cancelDownload()
+入口参数：无
+出口参数：无
+函数功能：响应用户取消操作并中止当前安装包下载
+*****************************************************/
+void UpdateManager::cancelDownload()
+{
+    _downloadCancelled = true;
+    if (_installerReply != nullptr)
+    {
+        _installerReply->abort();
+        return;
+    }
+
+    discardInstaller();
+    closeDownloadProgress();
 }
 
 /*****************************************************
@@ -346,6 +492,7 @@ void UpdateManager::installAndRestart()
     {
         qWarning() << "Failed to launch the update installer";
         discardInstaller();
+        showUpdateError(QStringLiteral("无法启动更新安装程序。"));
         return;
     }
 

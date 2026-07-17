@@ -5,18 +5,21 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QUrl>
 #include <QVersionNumber>
 
 class QNetworkAccessManager;
 class QNetworkReply;
+class QProgressDialog;
+class QWidget;
 
 /* 更新管理器：仅在 MSI 安装目录内检查 GitHub 正式版并执行升级。 */
 class UpdateManager final : public QObject
 {
 public:
     // 创建应用程序更新管理器。
-    explicit UpdateManager(QObject* parent = nullptr);
+    explicit UpdateManager(QWidget* parentWindow, QObject* parent = nullptr);
     // 释放更新管理器和未完成的下载文件。
     ~UpdateManager() override;
 
@@ -42,6 +45,18 @@ private:
     void handleInstallerData(QNetworkReply* reply);
     // 处理 MSI 下载结束事件。
     void handleInstallerFinished(QNetworkReply* reply);
+    // 显示新版本确认对话框，确认后再下载更新。
+    void showUpdateConfirmation();
+    // 创建并显示安装包下载进度对话框。
+    void showDownloadProgress();
+    // 按下载字节数刷新进度条和提示文字。
+    void updateDownloadProgress(qint64 receivedBytes, qint64 totalBytes);
+    // 关闭下载进度对话框。
+    void closeDownloadProgress();
+    // 显示更新检查、下载或校验失败的原因。
+    void showUpdateError(const QString& message);
+    // 中止当前安装包下载并清理临时文件。
+    void cancelDownload();
     // 启动独立更新脚本，等待当前程序退出后安装并重启。
     void installAndRestart();
     // 清理未完成或校验失败的安装包。
@@ -49,13 +64,18 @@ private:
     // 返回随 MSI 一起部署的更新脚本路径。
     QString updateScriptPath() const;
 
+    QPointer<QWidget> _parentWindow;
     QNetworkAccessManager* _networkManager{nullptr};
+    QProgressDialog* _downloadProgressDialog{nullptr};
+    QPointer<QNetworkReply> _installerReply;
     QFile _installerFile;
     QVersionNumber _availableVersion;
     QUrl _installerUrl;
+    QUrl _checksumUrl;
     QString _downloadedInstallerPath;
     QByteArray _expectedChecksum;
     bool _checkStarted{false};
+    bool _downloadCancelled{false};
     bool _installationStarted{false};
 };
 
