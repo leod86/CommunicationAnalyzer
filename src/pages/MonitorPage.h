@@ -8,7 +8,6 @@
 #include "ElaScrollPage.h"
 
 class ElaComboBox;
-class ElaCheckBox;
 class ElaIconButton;
 class ElaLineEdit;
 class ElaListView;
@@ -16,7 +15,7 @@ class ElaPivot;
 class ElaPushButton;
 class ElaText;
 class ElaToolBar;
-class ElaToggleSwitch;
+class ElaToggleButton;
 class ElaToolButton;
 class QFile;
 class QStandardItemModel;
@@ -108,7 +107,7 @@ private:
     {
         ElaComboBox* modeComboBox{nullptr};
         ElaLineEdit* contentEdit{nullptr};
-        ElaPushButton* sendButton{nullptr};
+        ElaToggleButton* sendButton{nullptr};
         QValidator* hexValidator{nullptr};
     };
 
@@ -160,8 +159,7 @@ private:
     ElaLineEdit* _frameTimeoutEdit{nullptr};
     ElaToolBar* _serialToolBar{nullptr};
     ElaIconButton* _refreshButton{nullptr};
-    ElaToggleSwitch* _connectionSwitch{nullptr};
-    ElaText* _connectionText{nullptr};
+    ElaToggleButton* _connectionButton{nullptr};
     ElaComboBox* _dataFormatComboBox{nullptr};
     TrafficTextEdit* _trafficView{nullptr};
     ElaToolButton* _timeButton{nullptr};
@@ -179,8 +177,8 @@ private:
     ElaPushButton* _inputModeButton{nullptr};
     ElaComboBox* _checksumComboBox{nullptr};
     ElaComboBox* _suffixComboBox{nullptr};
-    ElaPushButton* _sendButton{nullptr};
-    ElaCheckBox* _continuousSendCheckBox{nullptr};
+    ElaToggleButton* _sendButton{nullptr};
+    ElaToggleButton* _continuousSendButton{nullptr};
     ElaLineEdit* _sendIntervalEdit{nullptr};
     ElaPivot* _sidePanelPivot{nullptr};
     QStackedWidget* _sidePanelStackedWidget{nullptr};
