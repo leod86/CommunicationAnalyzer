@@ -57,12 +57,16 @@ private:
     void showUpdateError(const QString& message);
     // 中止当前安装包下载并清理临时文件。
     void cancelDownload();
+    // 显示独立安装脚本回传的上次更新失败原因。
+    bool showPreviousUpdateFailure();
     // 启动独立更新脚本，等待当前程序退出后安装并重启。
     void installAndRestart();
     // 清理未完成或校验失败的安装包。
     void discardInstaller();
     // 返回随 MSI 一起部署的更新脚本路径。
     QString updateScriptPath() const;
+    // 返回独立安装脚本写入更新结果的临时状态文件路径。
+    QString updateResultPath() const;
 
     QPointer<QWidget> _parentWindow;
     QNetworkAccessManager* _networkManager{nullptr};

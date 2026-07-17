@@ -64,6 +64,11 @@ void UpdateManager::checkForUpdates()
         return;
     }
 
+    if (showPreviousUpdateFailure())
+    {
+        return;
+    }
+
     _checkStarted = true;
     requestLatestRelease();
 }
@@ -462,6 +467,33 @@ void UpdateManager::cancelDownload()
 }
 
 /*****************************************************
+函数名称：bool UpdateManager::showPreviousUpdateFailure()
+入口参数：无
+出口参数：返回是否读取到上一次更新安装失败信息
+函数功能：读取独立安装脚本写入的失败结果，并向用户显示原因
+*****************************************************/
+bool UpdateManager::showPreviousUpdateFailure()
+{
+    const QString resultPath = updateResultPath();
+    QFile resultFile(resultPath);
+    if (!resultFile.exists() || !resultFile.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        return false;
+    }
+
+    const QString failureMessage = QString::fromUtf8(resultFile.readAll()).trimmed();
+    resultFile.close();
+    QFile::remove(resultPath);
+    if (failureMessage.isEmpty())
+    {
+        return false;
+    }
+
+    showUpdateError(QStringLiteral("上次更新未能完成。\n%1").arg(failureMessage));
+    return true;
+}
+
+/*****************************************************
 函数名称：void UpdateManager::installAndRestart()
 入口参数：无
 出口参数：无
@@ -471,6 +503,7 @@ void UpdateManager::installAndRestart()
 {
     const QString scriptPath = updateScriptPath();
     const QString executablePath = QCoreApplication::applicationFilePath();
+    const QString resultPath = updateResultPath();
     const QStringList arguments{
         QStringLiteral("-NoProfile"),
         QStringLiteral("-NonInteractive"),
@@ -486,6 +519,8 @@ void UpdateManager::installAndRestart()
         _downloadedInstallerPath,
         QStringLiteral("-ExecutablePath"),
         executablePath,
+        QStringLiteral("-ResultPath"),
+        resultPath,
     };
 
     if (!QProcess::startDetached(QStringLiteral("powershell.exe"), arguments))
@@ -527,4 +562,17 @@ void UpdateManager::discardInstaller()
 QString UpdateManager::updateScriptPath() const
 {
     return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("InstallUpdate.ps1"));
+}
+
+/*****************************************************
+函数名称：QString UpdateManager::updateResultPath() const
+入口参数：无
+出口参数：独立安装脚本回传更新结果的文件路径
+函数功能：生成与当前应用配置目录一致的更新结果文件路径
+*****************************************************/
+QString UpdateManager::updateResultPath() const
+{
+    const QString dataDirectory = QStandardPaths::writableLocation(
+        QStandardPaths::AppLocalDataLocation);
+    return QDir(dataDirectory).filePath(QStringLiteral("update-result.txt"));
 }
