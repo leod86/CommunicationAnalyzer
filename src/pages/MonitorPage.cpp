@@ -1,6 +1,5 @@
 #include "pages/MonitorPage.h"
 
-#include "ElaCheckBox.h"
 #include "ElaComboBox.h"
 #include "ElaIconButton.h"
 #include "ElaLineEdit.h"
@@ -11,7 +10,7 @@
 #include "ElaScrollArea.h"
 #include "ElaText.h"
 #include "ElaToolBar.h"
-#include "ElaToggleSwitch.h"
+#include "ElaToggleButton.h"
 #include "ElaToolButton.h"
 #include "widgets/TrafficTextEdit.h"
 
@@ -496,7 +495,7 @@ void MonitorPage::buildUi()
     _inputModeButton->setFont(compactControlFont);
     _inputModeButton->setToolTip(QStringLiteral("当前发送类型为文本，点击切换为HEX"));
 
-    _sendButton = new ElaPushButton(QStringLiteral("Send"), this);
+    _sendButton = new ElaToggleButton(QStringLiteral("Send"), this);
     _sendButton->setFixedSize(65, 30);
     _sendButton->setFont(compactControlFont);
     _sendButton->setEnabled(false);
@@ -510,10 +509,10 @@ void MonitorPage::buildUi()
     auto* inputModeLabel = new ElaText(QStringLiteral("模式"), this);
     inputModeLabel->setTextPixelSize(11);
 
-    _continuousSendCheckBox = new ElaCheckBox(QStringLiteral("连续发送"), this);
-    _continuousSendCheckBox->setFixedHeight(30);
-    _continuousSendCheckBox->setFont(compactControlFont);
-    _continuousSendCheckBox->setEnabled(false);
+    _continuousSendButton = new ElaToggleButton(QStringLiteral("连续发送"), this);
+    _continuousSendButton->setFixedSize(88, 30);
+    _continuousSendButton->setFont(compactControlFont);
+    _continuousSendButton->setEnabled(false);
 
     auto* sendIntervalLabel = new ElaText(QStringLiteral("间隔(ms)"), this);
     sendIntervalLabel->setTextPixelSize(11);
@@ -536,7 +535,7 @@ void MonitorPage::buildUi()
     transmitLayout->addWidget(_suffixComboBox, 3, 1);
     transmitLayout->addWidget(inputModeLabel, 4, 0);
     transmitLayout->addWidget(_inputModeButton, 4, 1, Qt::AlignLeft);
-    transmitLayout->addWidget(_continuousSendCheckBox, 5, 1, Qt::AlignLeft);
+    transmitLayout->addWidget(_continuousSendButton, 5, 1, Qt::AlignLeft);
     transmitLayout->addWidget(sendIntervalLabel, 6, 0);
     transmitLayout->addWidget(_sendIntervalEdit, 6, 1, Qt::AlignLeft);
     transmitLayout->addWidget(_sendButton, 7, 1, Qt::AlignLeft);
@@ -634,7 +633,20 @@ void MonitorPage::buildUi()
     connect(_logButton, &ElaToolButton::toggled, this, &MonitorPage::handleLogToggled);
     connect(_pauseScrollButton, &ElaToolButton::toggled, this, &MonitorPage::handlePauseScrollToggled);
     connect(clearButton, &ElaIconButton::clicked, this, &MonitorPage::clearTraffic);
-    connect(_sendButton, &ElaPushButton::clicked, this, &MonitorPage::handleSendClicked);
+    connect(_sendButton, &ElaToggleButton::toggled, this, [this](bool checked) {
+        if (!checked)
+        {
+            return;
+        }
+
+        handleSendClicked();
+        QTimer::singleShot(300, _sendButton, [this] {
+            if (_sendButton->getIsToggled())
+            {
+                _sendButton->setIsToggled(false);
+            }
+        });
+    });
     connect(_sidePanelPivot, &ElaPivot::pivotClicked,
             this, &MonitorPage::handleSidePanelPageChanged);
     connect(_textTransmitEdit, &ElaLineEdit::textChanged, this, &MonitorPage::handleTextTransmitChanged);
@@ -647,7 +659,7 @@ void MonitorPage::buildUi()
             ? QStringLiteral("当前发送类型为HEX，点击切换为文本")
             : QStringLiteral("当前发送类型为文本，点击切换为HEX"));
     });
-    connect(_continuousSendCheckBox, &ElaCheckBox::toggled,
+    connect(_continuousSendButton, &ElaToggleButton::toggled,
             this, &MonitorPage::handleContinuousSendToggled);
     connect(_contentSplitter, &QSplitter::splitterMoved, this, [this](int, int) {
         saveSettings();
@@ -746,10 +758,9 @@ ElaToolBar* MonitorPage::buildSerialToolBar()
     _refreshButton = new ElaIconButton(ElaIconType::ArrowsRotate, 17, 34, 32, toolBar);
     _refreshButton->setToolTip(QStringLiteral("刷新串口列表"));
 
-    _connectionText = new ElaText(QStringLiteral("连接"), toolBar);
-    _connectionText->setTextPixelSize(14);
-    _connectionSwitch = new ElaToggleSwitch(toolBar);
-    _connectionSwitch->setEnabled(false);
+    _connectionButton = new ElaToggleButton(QStringLiteral("连接"), toolBar);
+    _connectionButton->setFixedSize(80, 32);
+    _connectionButton->setEnabled(false);
 
     auto* leadingSpacer = new QWidget(toolBar);
     leadingSpacer->setFixedWidth(7);
@@ -762,11 +773,10 @@ ElaToolBar* MonitorPage::buildSerialToolBar()
     toolBar->addWidget(_stopBitsComboBox);
     toolBar->addSeparator();
     toolBar->addWidget(_refreshButton);
-    toolBar->addWidget(_connectionText);
-    toolBar->addWidget(_connectionSwitch);
+    toolBar->addWidget(_connectionButton);
 
     connect(_refreshButton, &ElaIconButton::clicked, this, &MonitorPage::refreshPortsRequested);
-    connect(_connectionSwitch, &ElaToggleSwitch::toggled, this, &MonitorPage::handleConnectionToggled);
+    connect(_connectionButton, &ElaToggleButton::toggled, this, &MonitorPage::handleConnectionToggled);
     return toolBar;
 }
 
@@ -825,7 +835,7 @@ QWidget* MonitorPage::buildMultiSendPanel()
         item.hexValidator = new QRegularExpressionValidator(
             QRegularExpression(QStringLiteral("^[0-9A-Fa-f\\s]*$")), item.contentEdit);
 
-        item.sendButton = new ElaPushButton(QStringLiteral("发送"), listWidget);
+        item.sendButton = new ElaToggleButton(QStringLiteral("发送"), listWidget);
         item.sendButton->setFixedSize(48, 30);
         item.sendButton->setFont(compactControlFont);
         item.sendButton->setEnabled(false);
@@ -836,8 +846,20 @@ QWidget* MonitorPage::buildMultiSendPanel()
         listLayout->addLayout(rowLayout);
 
         _quickSendItems.append(item);
-        connect(item.sendButton, &ElaPushButton::clicked, this, [this, index]() {
+        ElaToggleButton* const sendButton = item.sendButton;
+        connect(sendButton, &ElaToggleButton::toggled, this, [this, index, sendButton](bool checked) {
+            if (!checked)
+            {
+                return;
+            }
+
             sendQuickItem(index);
+            QTimer::singleShot(300, sendButton, [sendButton] {
+                if (sendButton->getIsToggled())
+                {
+                    sendButton->setIsToggled(false);
+                }
+            });
         });
         connect(item.modeComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, index](int) {
             updateQuickSendItemState(index);
@@ -1076,7 +1098,7 @@ void MonitorPage::updatePorts(const QStringList& portNames, const QStringList& d
         saveSettings();
     }
 
-    _connectionSwitch->setEnabled(_connected || !portNames.isEmpty());
+    _connectionButton->setEnabled(_connected || !portNames.isEmpty());
     if (!_connected)
     {
         _statusText->setText(portNames.isEmpty() ? QStringLiteral("未发现可用串口") : QStringLiteral("未连接"));
@@ -1102,19 +1124,19 @@ void MonitorPage::setConnectionState(bool connected, const QString& description)
     const bool wasConnected = _connected;
     _connected = connected;
     {
-        const QSignalBlocker blocker(_connectionSwitch);
-        _connectionSwitch->setIsToggled(connected);
+        const QSignalBlocker blocker(_connectionButton);
+        _connectionButton->setIsToggled(connected);
     }
 
     setHardwareControlsEnabled(!connected);
-    _connectionSwitch->setEnabled(connected || _portComboBox->count() > 0);
-    _connectionText->setText(connected ? QStringLiteral("已连接") : QStringLiteral("连接"));
+    _connectionButton->setEnabled(connected || _portComboBox->count() > 0);
+    _connectionButton->setText(connected ? QStringLiteral("已连接") : QStringLiteral("连接"));
     _sendButton->setEnabled(connected);
-    _continuousSendCheckBox->setEnabled(connected);
+    _continuousSendButton->setEnabled(connected);
     if (!connected)
     {
-        const QSignalBlocker blocker(_continuousSendCheckBox);
-        _continuousSendCheckBox->setChecked(false);
+        const QSignalBlocker blocker(_continuousSendButton);
+        _continuousSendButton->setIsToggled(false);
         _continuousSendTimer->stop();
     }
     for (int index = 0; index < _quickSendItems.size(); ++index)
@@ -1177,10 +1199,10 @@ void MonitorPage::showError(const QString& message)
                          message,
                          3500,
                          this);
-    if (!_connected && _connectionSwitch->getIsToggled())
+    if (!_connected && _connectionButton->getIsToggled())
     {
-        const QSignalBlocker blocker(_connectionSwitch);
-        _connectionSwitch->setIsToggled(false);
+        const QSignalBlocker blocker(_connectionButton);
+        _connectionButton->setIsToggled(false);
     }
 }
 
@@ -1232,8 +1254,8 @@ void MonitorPage::handleSendClicked()
     if (!valid)
     {
         _continuousSendTimer->stop();
-        const QSignalBlocker blocker(_continuousSendCheckBox);
-        _continuousSendCheckBox->setChecked(false);
+        const QSignalBlocker blocker(_continuousSendButton);
+        _continuousSendButton->setIsToggled(false);
         showError(QStringLiteral("HEX 数据必须由偶数个十六进制字符组成"));
         return;
     }
@@ -1241,8 +1263,8 @@ void MonitorPage::handleSendClicked()
     if (data.isEmpty())
     {
         _continuousSendTimer->stop();
-        const QSignalBlocker blocker(_continuousSendCheckBox);
-        _continuousSendCheckBox->setChecked(false);
+        const QSignalBlocker blocker(_continuousSendButton);
+        _continuousSendButton->setIsToggled(false);
         showError(QStringLiteral("发送数据不能为空"));
         return;
     }
@@ -1403,8 +1425,8 @@ void MonitorPage::handleContinuousSendToggled(bool checked)
 
     if (!_connected)
     {
-        const QSignalBlocker blocker(_continuousSendCheckBox);
-        _continuousSendCheckBox->setChecked(false);
+        const QSignalBlocker blocker(_continuousSendButton);
+        _continuousSendButton->setIsToggled(false);
         showError(QStringLiteral("串口未连接，无法连续发送"));
         return;
     }
@@ -1413,8 +1435,8 @@ void MonitorPage::handleContinuousSendToggled(bool checked)
     const QByteArray data = parseTransmitData(valid);
     if (!valid || data.isEmpty())
     {
-        const QSignalBlocker blocker(_continuousSendCheckBox);
-        _continuousSendCheckBox->setChecked(false);
+        const QSignalBlocker blocker(_continuousSendButton);
+        _continuousSendButton->setIsToggled(false);
         showError(valid ? QStringLiteral("发送数据不能为空")
                         : QStringLiteral("HEX 数据必须由偶数个十六进制字符组成"));
         return;
