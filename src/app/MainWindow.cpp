@@ -2,6 +2,7 @@
 
 #include "communication/SerialController.h"
 #include "ElaToolBar.h"
+#include "pages/AboutPage.h"
 #include "pages/MonitorPage.h"
 #include "pages/SettingPage.h"
 
@@ -15,6 +16,7 @@ MainWindow::MainWindow(QWidget* parent)
     : ElaWindow(parent)
     , _monitorPage(new MonitorPage(this))
     , _settingPage(new SettingPage(this))
+    , _aboutPage(new AboutPage(this))
     , _serialController(new SerialController(this))
 {
     // 初始化窗口及业务信号连接。
@@ -57,6 +59,7 @@ void MainWindow::initializeWindow()
     addPageNode(QStringLiteral("串口监视"), _monitorPage, ElaIconType::Table);
     _monitorPageKey = _monitorPage->property("ElaPageKey").toString();
     addFooterNode(QStringLiteral("设置"), _settingPage, _settingPageKey, 0, ElaIconType::Gear);
+    addFooterNode(QStringLiteral("关于"), _aboutPage, _aboutPageKey, 0, ElaIconType::Circle);
     _settingPage->applySavedSettings();
 }
 

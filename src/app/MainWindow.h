@@ -3,6 +3,7 @@
 
 #include "ElaWindow.h"
 
+class AboutPage;
 class MonitorPage;
 class SerialController;
 class SettingPage;
@@ -25,9 +26,11 @@ private:
 
     MonitorPage* _monitorPage{nullptr};
     SettingPage* _settingPage{nullptr};
+    AboutPage* _aboutPage{nullptr};
     SerialController* _serialController{nullptr};
     QString _monitorPageKey;
     QString _settingPageKey;
+    QString _aboutPageKey;
 };
 
 #endif // MAINWINDOW_H

@@ -27,7 +27,7 @@ int main(int argc, char* argv[])
     mainWindow.show();
 
     // 主窗口显示后检查更新，避免网络请求阻塞程序首帧。
-    auto* updateManager = new UpdateManager(&application);
+    auto* updateManager = new UpdateManager(&mainWindow, &application);
     QTimer::singleShot(0, updateManager, [updateManager]() {
         updateManager->checkForUpdates();
     });
