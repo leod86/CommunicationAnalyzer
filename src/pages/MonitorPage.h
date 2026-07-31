@@ -102,6 +102,13 @@ private:
         QByteArray data;
     };
 
+    // 单条通讯记录的文本和HEX显示内容。
+    struct TrafficDisplayContent
+    {
+        QString text;
+        QString hex;
+    };
+
     // 单条快捷发送配置，包含发送类型、内容输入框和发送按钮。
     struct QuickSendItem
     {
@@ -141,10 +148,12 @@ private:
     void appendTraffic(bool received, const QByteArray& data);
     // 使用不同背景样式向接收区插入一条通讯记录。
     void appendFormattedTraffic(const TrafficRecord& record);
-    // 清除文本中的 ANSI 控制序列。
-    QString stripAnsiSequences(const QString& text) const;
+    // 按当前编码选项生成与接收区一致的文本和HEX内容。
+    TrafficDisplayContent formatTrafficDisplayContent(const TrafficRecord& record) const;
     // 将通讯记录写入日志文件。
     void writeLog(const TrafficRecord& record);
+    // 更新底部状态栏中当前鼠标选中文本的字符数量。
+    void updateSelectionLength();
     // 根据连接状态启用或锁定硬件参数。
     void setHardwareControlsEnabled(bool enabled);
     // 将接收窗口滚动到指定搜索结果对应的文档块。
@@ -166,7 +175,6 @@ private:
     ElaToolButton* _utf8Button{nullptr};
     ElaToolButton* _rxButton{nullptr};
     ElaToolButton* _txButton{nullptr};
-    ElaToolButton* _ansiButton{nullptr};
     ElaToolButton* _logButton{nullptr};
     ElaToolButton* _pauseScrollButton{nullptr};
     ElaLineEdit* _trafficSearchEdit{nullptr};
@@ -184,6 +192,7 @@ private:
     QStackedWidget* _sidePanelStackedWidget{nullptr};
     QSplitter* _contentSplitter{nullptr};
     ElaText* _statusText{nullptr};
+    ElaText* _selectionLengthText{nullptr};
     ElaText* _transferText{nullptr};
     QFile* _logFile{nullptr};
     QTimer* _rateTimer{nullptr};
