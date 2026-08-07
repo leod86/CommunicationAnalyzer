@@ -51,3 +51,22 @@ Install/CommunicationAnalyzer/CommunicationAnalyzer.exe
 ```
 
 项目不使用 Qt Designer `.ui` 文件，也不对 Ela 控件应用 QSS。
+
+## 串口 MCP（Codex）
+
+在工具的“设置 -> AI 接入”中开启“串口 MCP 服务”，然后注册本地 Streamable HTTP 服务：
+
+```powershell
+codex mcp add communication-analyzer --url http://127.0.0.1:8765/mcp
+```
+
+重新启动 Codex 后，可使用以下工具：
+
+- `serial_list_ports`：读取可用串口。
+- `serial_get_status`：读取当前连接状态和串口参数。
+- `serial_read`：按游标读取 MCP 开启期间的 RX/TX 记录。
+- `serial_open`：打开指定串口。
+- `serial_close`：关闭当前串口。
+- `serial_send`：按 HEX 或 UTF-8 发送数据。
+
+MCP 服务仅监听 `127.0.0.1:8765`，关闭设置开关后立即停止监听并清除 MCP 读取队列。

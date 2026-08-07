@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 cmake_policy(SET CMP0087 NEW)
 
-project(CommunicationAnalyzer VERSION 1.1.5 LANGUAGES CXX)
+project(CommunicationAnalyzer VERSION 1.1.6 LANGUAGES CXX)
 
 set(COMMUNICATION_ANALYZER_VERSION "${PROJECT_VERSION}" CACHE STRING
     "Three-part version used by the application and the MSI package"
@@ -53,6 +53,8 @@ qt_add_executable(CommunicationAnalyzer
     src/pages/AboutPage.h
     src/communication/SerialController.cpp
     src/communication/SerialController.h
+    src/mcp/SerialMcpServer.cpp
+    src/mcp/SerialMcpServer.h
     src/pages/MonitorPage.cpp
     src/pages/MonitorPage.h
     src/pages/SettingPage.cpp
