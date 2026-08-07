@@ -17,15 +17,29 @@ public:
     // 释放串口控制器并关闭串口。
     ~SerialController() override;
 
+    // 获取当前串口是否已打开。
+    bool isOpen() const;
+    // 获取当前串口名称。
+    QString portName() const;
+    // 获取当前串口波特率。
+    qint32 baudRate() const;
+    // 获取当前串口数据位、校验位和停止位。
+    int dataBits() const;
+    int parity() const;
+    int stopBits() const;
+    // 获取最近一次串口扫描结果。
+    QStringList portNames() const;
+    QStringList portDescriptions() const;
+
 public slots:
     // 刷新当前可用串口列表。
     void refreshPorts();
     // 使用界面选择的完整参数打开串口。
-    void openPort(const QString& portName, qint32 baudRate, int dataBits, int parity, int stopBits);
+    bool openPort(const QString& portName, qint32 baudRate, int dataBits, int parity, int stopBits);
     // 关闭当前串口。
     void closePort();
     // 向当前串口写入数据。
-    void writeData(const QByteArray& data);
+    bool writeData(const QByteArray& data);
     // 设置接收数据的断帧等待时间。
     void setFrameTimeout(int milliseconds);
 
@@ -61,6 +75,12 @@ private:
     int _frameTimeoutMilliseconds{20};
     QStringList _lastPortNames;
     QStringList _lastPortDescriptions;
+    bool _connected{false};
+    QString _activePortName;
+    qint32 _activeBaudRate{0};
+    int _activeDataBits{0};
+    int _activeParity{0};
+    int _activeStopBits{0};
 };
 
 #endif // SERIALCONTROLLER_H

@@ -377,15 +377,6 @@ void MonitorPage::buildUi()
     _txButton->setFixedHeight(30);
     _txButton->setFont(compactControlFont);
 
-    _ansiButton = new ElaToolButton(this);
-    _ansiButton->setText(QStringLiteral("ANSI"));
-    _ansiButton->setElaIcon(ElaIconType::Terminal);
-    _ansiButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    _ansiButton->setCheckable(true);
-    _ansiButton->setFixedHeight(30);
-    _ansiButton->setFont(compactControlFont);
-    _ansiButton->setToolTip(QStringLiteral("解析并隐藏 ANSI 控制序列"));
-
     _logButton = new ElaToolButton(this);
     _logButton->setText(QStringLiteral("Log"));
     _logButton->setElaIcon(ElaIconType::Circle);
@@ -420,7 +411,12 @@ void MonitorPage::buildUi()
     _frameTimeoutEdit->setAlignment(Qt::AlignCenter);
     _frameTimeoutEdit->setToolTip(QStringLiteral("连续接收数据静默指定时间后合并为一帧"));
 
-    auto* clearButton = new ElaIconButton(ElaIconType::Eraser, 15, 31, 27, this);
+    auto* clearButton = new ElaToolButton(this);
+    clearButton->setText(QStringLiteral("清除窗口"));
+    clearButton->setElaIcon(ElaIconType::TrashCanList);
+    clearButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    clearButton->setFixedHeight(30);
+    clearButton->setFont(compactControlFont);
     clearButton->setToolTip(QStringLiteral("清空显示和统计"));
 
     displayToolbarWidget->addResponsiveWidget(_dataFormatComboBox, 0);
@@ -428,18 +424,17 @@ void MonitorPage::buildUi()
     displayToolbarWidget->addResponsiveWidget(_utf8Button, 2);
     displayToolbarWidget->addResponsiveWidget(_rxButton, 3);
     displayToolbarWidget->addResponsiveWidget(_txButton, 4);
-    displayToolbarWidget->addResponsiveWidget(_ansiButton, 5);
-    displayToolbarWidget->addResponsiveWidget(_logButton, 6);
-    displayToolbarWidget->addResponsiveWidget(_pauseScrollButton, 7);
-    displayToolbarWidget->addResponsiveWidget(receiveSeparator, 8);
-    displayToolbarWidget->addResponsiveWidget(frameTimeoutLabel, 9);
-    displayToolbarWidget->addResponsiveWidget(_frameTimeoutEdit, 10);
-    displayToolbarWidget->addResponsiveWidget(clearButton, 11);
+    displayToolbarWidget->addResponsiveWidget(_logButton, 5);
+    displayToolbarWidget->addResponsiveWidget(_pauseScrollButton, 6);
+    displayToolbarWidget->addResponsiveWidget(receiveSeparator, 7);
+    displayToolbarWidget->addResponsiveWidget(frameTimeoutLabel, 8);
+    displayToolbarWidget->addResponsiveWidget(_frameTimeoutEdit, 9);
+    displayToolbarWidget->addResponsiveWidget(clearButton, 10);
 
     _trafficView = new TrafficTextEdit(this);
     _trafficView->setReadOnly(true);
     _trafficView->setMinimumHeight(120);
-    _trafficView->setPlaceholderText(QStringLiteral("连接设备后，收发数据将在这里显示"));
+    _trafficView->setPlaceholderText(QStringLiteral("连接设备后，收发数据将在这里显示\r\n使用Ctrl+滚轮缩放调节字体大小"));
     _trafficView->document()->setMaximumBlockCount(20000);
 
     auto* singleSendPanel = new QWidget(this);
@@ -542,15 +537,19 @@ void MonitorPage::buildUi()
     transmitLayout->setColumnStretch(1, 1);
     transmitLayout->setRowStretch(8, 1);
 
-    auto* statusLayout = new QHBoxLayout();
+    auto* statusLayout = new QGridLayout();
     statusLayout->setContentsMargins(12, 0, 4, 0);
     _statusText = new ElaText(QStringLiteral("未连接"), this);
     _statusText->setTextPixelSize(12);
+    _selectionLengthText = new ElaText(QStringLiteral("总计 0 字符（不含空格）"), this);
+    _selectionLengthText->setTextPixelSize(12);
     _transferText = new ElaText(QStringLiteral("↓ 0 B/s  0 B    ↑ 0 B/s  0 B"), this);
     _transferText->setTextPixelSize(12);
-    statusLayout->addWidget(_statusText);
-    statusLayout->addStretch();
-    statusLayout->addWidget(_transferText);
+    statusLayout->setColumnStretch(0, 1);
+    statusLayout->setColumnStretch(2, 1);
+    statusLayout->addWidget(_statusText, 0, 0, Qt::AlignLeft);
+    statusLayout->addWidget(_selectionLengthText, 0, 1, Qt::AlignHCenter);
+    statusLayout->addWidget(_transferText, 0, 2, Qt::AlignRight);
 
     auto* monitorWidget = new QWidget(this);
     monitorWidget->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -622,7 +621,7 @@ void MonitorPage::buildUi()
 
     // 显示开关统一触发历史记录重绘。
     const QList<ElaToolButton*> displayButtons = {
-        _timeButton, _utf8Button, _rxButton, _txButton, _ansiButton};
+        _timeButton, _utf8Button, _rxButton, _txButton};
     for (ElaToolButton* button : displayButtons)
     {
         connect(button, &ElaToolButton::toggled, this, &MonitorPage::renderTraffic);
@@ -632,7 +631,9 @@ void MonitorPage::buildUi()
 
     connect(_logButton, &ElaToolButton::toggled, this, &MonitorPage::handleLogToggled);
     connect(_pauseScrollButton, &ElaToolButton::toggled, this, &MonitorPage::handlePauseScrollToggled);
-    connect(clearButton, &ElaIconButton::clicked, this, &MonitorPage::clearTraffic);
+    connect(_trafficView, &QPlainTextEdit::selectionChanged,
+            this, &MonitorPage::updateSelectionLength);
+    connect(clearButton, &ElaToolButton::clicked, this, &MonitorPage::clearTraffic);
     connect(_sendButton, &ElaToggleButton::toggled, this, [this](bool checked) {
         if (!checked)
         {
@@ -922,7 +923,6 @@ void MonitorPage::loadSettings()
     _utf8Button->setChecked(settings.value(QStringLiteral("display/utf8"), true).toBool());
     _rxButton->setChecked(settings.value(QStringLiteral("display/rx"), true).toBool());
     _txButton->setChecked(settings.value(QStringLiteral("display/tx"), true).toBool());
-    _ansiButton->setChecked(settings.value(QStringLiteral("display/ansi"), false).toBool());
     _trafficView->setTextPointSize(
         settings.value(QStringLiteral("display/fontSize"), _trafficView->textPointSize()).toInt());
     _inputModeButton->setChecked(settings.value(QStringLiteral("transmit/hexMode"), false).toBool());
@@ -980,7 +980,7 @@ void MonitorPage::saveSettings()
     settings.setValue(QStringLiteral("display/utf8"), _utf8Button->isChecked());
     settings.setValue(QStringLiteral("display/rx"), _rxButton->isChecked());
     settings.setValue(QStringLiteral("display/tx"), _txButton->isChecked());
-    settings.setValue(QStringLiteral("display/ansi"), _ansiButton->isChecked());
+    settings.remove(QStringLiteral("display/ansi"));
     settings.setValue(QStringLiteral("display/fontSize"), _trafficView->textPointSize());
     settings.remove(QStringLiteral("display/hex"));
     settings.remove(QStringLiteral("display/hexCompare"));
@@ -1033,7 +1033,7 @@ void MonitorPage::connectSettingsSignals()
     }
 
     const QList<ElaToolButton*> displayButtons = {
-        _timeButton, _utf8Button, _rxButton, _txButton, _ansiButton};
+        _timeButton, _utf8Button, _rxButton, _txButton};
     for (ElaToolButton* button : displayButtons)
     {
         connect(button, &ElaToolButton::toggled, this, [this](bool) {
@@ -1560,9 +1560,11 @@ void MonitorPage::handleLogToggled(bool checked)
     {
         _logFile = new QFile(this);
     }
-    _logFile->setFileName(QDir(directoryPath).filePath(QStringLiteral("traffic.log")));
+    const QString logFileName = QDateTime::currentDateTime().toString(
+        QStringLiteral("yyyyMMdd_HHmmss_zzz.log"));
+    _logFile->setFileName(QDir(directoryPath).filePath(logFileName));
 
-    if (!_logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
+    if (!_logFile->open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
     {
         const QSignalBlocker blocker(_logButton);
         _logButton->setChecked(false);
@@ -1624,6 +1626,28 @@ void MonitorPage::updateTransferRate()
                                .arg(_rxBytes)
                                .arg(txRate)
                                 .arg(_txBytes));
+}
+
+/*****************************************************
+函数名称：void MonitorPage::updateSelectionLength()
+入口参数：无
+出口参数：无
+函数功能：统计接收窗口中当前鼠标选中文本的非空白字符数量并更新底部状态栏
+*****************************************************/
+void MonitorPage::updateSelectionLength()
+{
+    const QString selectedText = _trafficView->textCursor().selectedText();
+    qsizetype characterCount = 0;
+    for (const QChar character : selectedText)
+    {
+        if (!character.isSpace())
+        {
+            ++characterCount;
+        }
+    }
+
+    _selectionLengthText->setText(
+        QStringLiteral("总计 %1 字符（不含空格）").arg(static_cast<qint64>(characterCount)));
 }
 
 /*****************************************************
@@ -1926,7 +1950,10 @@ void MonitorPage::appendTraffic(bool received, const QByteArray& data)
 
     if (_logButton->isChecked())
     {
-        writeLog(record);
+        if (displayReceived || displaySent)
+        {
+            writeLog(record);
+        }
     }
 }
 
@@ -1938,21 +1965,9 @@ void MonitorPage::appendTraffic(bool received, const QByteArray& data)
 *****************************************************/
 void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
 {
-    QString textContent = _utf8Button->isChecked()
-        ? QString::fromUtf8(record.data)
-        : QString::fromLatin1(record.data);
-    const QString hexContent = QString::fromLatin1(record.data.toHex(' ').toUpper());
-
-    if (_ansiButton->isChecked())
-    {
-        textContent = stripAnsiSequences(textContent);
-    }
-    else
-    {
-        textContent.replace(QChar(0x1B), QStringLiteral("\\x1B"));
-    }
-    // Windows文本剪贴板以空字符结尾，直接保留0x00会导致全选复制在此处截断。
-    textContent.replace(QChar::Null, QStringLiteral("\\x00"));
+    const TrafficDisplayContent displayContent = formatTrafficDisplayContent(record);
+    const QString& textContent = displayContent.text;
+    const QString& hexContent = displayContent.hex;
 
     const QString timestamp = record.timestamp.toString(QStringLiteral("HH:mm:ss.zzz"));
 
@@ -2029,24 +2044,30 @@ void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
 }
 
 /*****************************************************
-函数名称：QString MonitorPage::stripAnsiSequences(const QString& text) const
-入口参数：text为可能带ANSI转义序列的文本
-出口参数：移除控制序列后的文本
-函数功能：清除常见ANSI终端颜色和光标控制序列
+函数名称：MonitorPage::TrafficDisplayContent MonitorPage::formatTrafficDisplayContent(const TrafficRecord& record) const
+入口参数：record为原始通讯记录
+出口参数：适用于文本和HEX显示的格式化内容
+函数功能：按当前UTF-8选项生成接收窗口和日志可共用的数据文本
 *****************************************************/
-QString MonitorPage::stripAnsiSequences(const QString& text) const
+MonitorPage::TrafficDisplayContent MonitorPage::formatTrafficDisplayContent(const TrafficRecord& record) const
 {
-    QString result = text;
-    static const QRegularExpression ansiPattern(QStringLiteral("\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])"));
-    result.remove(ansiPattern);
-    return result;
+    TrafficDisplayContent displayContent;
+    displayContent.text = _utf8Button->isChecked()
+        ? QString::fromUtf8(record.data)
+        : QString::fromLatin1(record.data);
+    displayContent.hex = QString::fromLatin1(record.data.toHex(' ').toUpper());
+
+    displayContent.text.replace(QChar(0x1B), QStringLiteral("\\x1B"));
+    // Windows文本剪贴板以空字符结尾，直接保留0x00会导致全选复制在此处截断。
+    displayContent.text.replace(QChar::Null, QStringLiteral("\\x00"));
+    return displayContent;
 }
 
 /*****************************************************
 函数名称：void MonitorPage::writeLog(const TrafficRecord& record)
 入口参数：record为待记录通讯数据
 出口参数：无
-函数功能：将时间、方向和HEX字节写入日志文件
+函数功能：按当前接收区显示格式将时间、方向和数据写入日志文件
 *****************************************************/
 void MonitorPage::writeLog(const TrafficRecord& record)
 {
@@ -2055,10 +2076,36 @@ void MonitorPage::writeLog(const TrafficRecord& record)
         return;
     }
 
+    const TrafficDisplayContent displayContent = formatTrafficDisplayContent(record);
+    QString logContent;
+    if (_timeButton->isChecked())
+    {
+        logContent += QStringLiteral("[%1] ").arg(
+            record.timestamp.toString(QStringLiteral("HH:mm:ss.zzz")));
+    }
+    logContent += record.received ? QStringLiteral("[RX] ") : QStringLiteral("[TX] ");
+
+    const int displayMode = _dataFormatComboBox->currentData().toInt();
+    if (displayMode == 2)
+    {
+        logContent += displayContent.text;
+        if (!displayContent.text.endsWith(QChar('\n')))
+        {
+            logContent += QChar('\n');
+        }
+        logContent += displayContent.hex;
+    }
+    else if (displayMode == 1)
+    {
+        logContent += displayContent.hex;
+    }
+    else
+    {
+        logContent += displayContent.text;
+    }
+
     QTextStream stream(_logFile);
-    stream << record.timestamp.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"))
-           << ' ' << (record.received ? QStringLiteral("RX") : QStringLiteral("TX"))
-           << "  " << QString::fromLatin1(record.data.toHex(' ').toUpper()) << '\n';
+    stream << logContent << '\n';
     stream.flush();
 }
 

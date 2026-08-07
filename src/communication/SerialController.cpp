@@ -49,6 +49,94 @@ SerialController::~SerialController()
 }
 
 /*****************************************************
+函数名称：bool SerialController::isOpen() const
+入口参数：无
+出口参数：串口是否已打开
+函数功能：返回当前串口连接状态
+*****************************************************/
+bool SerialController::isOpen() const
+{
+    return _connected && _serialPort.isOpen();
+}
+
+/*****************************************************
+函数名称：QString SerialController::portName() const
+入口参数：无
+出口参数：当前串口名称
+函数功能：返回当前已连接串口名称
+*****************************************************/
+QString SerialController::portName() const
+{
+    return _activePortName;
+}
+
+/*****************************************************
+函数名称：qint32 SerialController::baudRate() const
+入口参数：无
+出口参数：当前波特率
+函数功能：返回当前串口波特率
+*****************************************************/
+qint32 SerialController::baudRate() const
+{
+    return _activeBaudRate;
+}
+
+/*****************************************************
+函数名称：int SerialController::dataBits() const
+入口参数：无
+出口参数：当前数据位配置
+函数功能：返回当前串口数据位配置
+*****************************************************/
+int SerialController::dataBits() const
+{
+    return _activeDataBits;
+}
+
+/*****************************************************
+函数名称：int SerialController::parity() const
+入口参数：无
+出口参数：当前校验位配置
+函数功能：返回当前串口校验位配置
+*****************************************************/
+int SerialController::parity() const
+{
+    return _activeParity;
+}
+
+/*****************************************************
+函数名称：int SerialController::stopBits() const
+入口参数：无
+出口参数：当前停止位配置
+函数功能：返回当前串口停止位配置
+*****************************************************/
+int SerialController::stopBits() const
+{
+    return _activeStopBits;
+}
+
+/*****************************************************
+函数名称：QStringList SerialController::portNames() const
+入口参数：无
+出口参数：最近一次扫描到的串口名称
+函数功能：返回当前可用串口名称列表
+*****************************************************/
+QStringList SerialController::portNames() const
+{
+    return _lastPortNames;
+}
+
+/*****************************************************
+函数名称：QStringList SerialController::portDescriptions() const
+入口参数：无
+出口参数：最近一次扫描到的串口描述
+函数功能：返回当前可用串口描述列表
+*****************************************************/
+QStringList SerialController::portDescriptions() const
+{
+    return _lastPortDescriptions;
+}
+
+/*****************************************************
 函数名称：void SerialController::refreshPorts()
 入口参数：无
 出口参数：无
@@ -91,17 +179,17 @@ void SerialController::updateAvailablePorts(bool forceUpdate)
 }
 
 /*****************************************************
-函数名称：void SerialController::openPort(const QString& portName, qint32 baudRate, int dataBits, int parity, int stopBits)
+函数名称：bool SerialController::openPort(const QString& portName, qint32 baudRate, int dataBits, int parity, int stopBits)
 入口参数：portName为串口名，baudRate为波特率，dataBits为数据位，parity为校验位，stopBits为停止位
-出口参数：无
+出口参数：串口是否打开成功
 函数功能：使用完整串口参数打开指定设备
 *****************************************************/
-void SerialController::openPort(const QString& portName, qint32 baudRate, int dataBits, int parity, int stopBits)
+bool SerialController::openPort(const QString& portName, qint32 baudRate, int dataBits, int parity, int stopBits)
 {
     if (portName.isEmpty())
     {
         emit errorOccurred(QStringLiteral("请选择有效串口"));
-        return;
+        return false;
     }
 
     if (_serialPort.isOpen())
@@ -123,17 +211,26 @@ void SerialController::openPort(const QString& portName, qint32 baudRate, int da
     {
         emit errorOccurred(QStringLiteral("串口参数不受当前设备支持"));
         emit connectionStateChanged(false, QStringLiteral("未连接"));
-        return;
+        _connected = false;
+        return false;
     }
 
     if (!_serialPort.open(QIODevice::ReadWrite))
     {
         emit errorOccurred(QStringLiteral("打开 %1 失败：%2").arg(portName, _serialPort.errorString()));
         emit connectionStateChanged(false, QStringLiteral("未连接"));
-        return;
+        _connected = false;
+        return false;
     }
 
+    _connected = true;
+    _activePortName = portName;
+    _activeBaudRate = baudRate;
+    _activeDataBits = dataBits;
+    _activeParity = parity;
+    _activeStopBits = stopBits;
     emit connectionStateChanged(true, QStringLiteral("%1 @ %2").arg(portName).arg(baudRate));
+    return true;
 }
 
 /*****************************************************
@@ -150,36 +247,38 @@ void SerialController::closePort()
         _serialPort.close();
     }
 
+    _connected = false;
     emit connectionStateChanged(false, QStringLiteral("未连接"));
 }
 
 /*****************************************************
-函数名称：void SerialController::writeData(const QByteArray& data)
+函数名称：bool SerialController::writeData(const QByteArray& data)
 入口参数：data为待发送字节数据
-出口参数：无
+出口参数：数据是否提交到串口发送缓冲区
 函数功能：向已打开串口异步写入数据
 *****************************************************/
-void SerialController::writeData(const QByteArray& data)
+bool SerialController::writeData(const QByteArray& data)
 {
     if (!_serialPort.isOpen())
     {
         emit errorOccurred(QStringLiteral("串口未连接"));
-        return;
+        return false;
     }
 
     if (data.isEmpty())
     {
         emit errorOccurred(QStringLiteral("发送数据不能为空"));
-        return;
+        return false;
     }
 
     if (_serialPort.write(data) < 0)
     {
         emit errorOccurred(QStringLiteral("发送失败：%1").arg(_serialPort.errorString()));
-        return;
+        return false;
     }
 
     emit dataSent(data);
+    return true;
 }
 
 /*****************************************************
