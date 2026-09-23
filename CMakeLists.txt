@@ -61,6 +61,8 @@ qt_add_executable(CommunicationAnalyzer
     src/pages/SettingPage.h
     src/update/UpdateManager.cpp
     src/update/UpdateManager.h
+    src/widgets/ComboBoxWheelGuard.cpp
+    src/widgets/ComboBoxWheelGuard.h
     src/widgets/TrafficTextEdit.cpp
     src/widgets/TrafficTextEdit.h
 )
