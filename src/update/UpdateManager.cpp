@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -22,7 +23,115 @@ namespace
 {
 constexpr auto kInstallerAssetName = "CommunicationAnalyzer-x64.msi";
 constexpr auto kChecksumAssetName = "CommunicationAnalyzer-x64.msi.sha256";
+constexpr auto kRateLimitResetHeader = "X-RateLimit-Reset";
+constexpr int kMaxFailureBodyCharacters = 200;
+
+/*****************************************************
+函数名称：QString summarizeFailureBody(const QByteArray& body)
+入口参数：body为失败响应的原始正文
+出口参数：可供展示的失败摘要，正文为空时返回空字符串
+函数功能：优先提取 GitHub 错误 JSON 的 message 字段，否则退化为纯文本并统一截断长度
+*****************************************************/
+QString summarizeFailureBody(const QByteArray& body)
+{
+    const QByteArray trimmedBody = body.trimmed();
+    if (trimmedBody.isEmpty())
+    {
+        return {};
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(trimmedBody, &parseError);
+    QString summary;
+    if (parseError.error == QJsonParseError::NoError && document.isObject())
+    {
+        summary = document.object().value(QStringLiteral("message")).toString();
+    }
+    if (summary.isEmpty())
+    {
+        summary = QString::fromUtf8(trimmedBody);
+    }
+
+    summary = summary.simplified();
+    if (summary.size() > kMaxFailureBodyCharacters)
+    {
+        summary.truncate(kMaxFailureBodyCharacters);
+        summary += QStringLiteral("…");
+    }
+    return summary;
 }
+
+/*****************************************************
+函数名称：QString appendFailureDetail(const QString& summary, const QString& detail)
+入口参数：summary为失败结论，detail为服务端返回的细节
+出口参数：拼接后的完整提示文本
+函数功能：按细节是否存在选择句号或冒号结尾，避免出现空冒号
+*****************************************************/
+QString appendFailureDetail(const QString& summary, const QString& detail)
+{
+    if (detail.isEmpty())
+    {
+        return summary + QStringLiteral("。");
+    }
+    return summary + QStringLiteral("：") + detail;
+}
+
+/*****************************************************
+函数名称：QString describeNetworkFailure(const QNetworkReply* reply, const QByteArray& body)
+入口参数：reply为已结束的网络响应，body为该响应的正文
+出口参数：可直接展示给用户的失败原因
+函数功能：结合 HTTP 状态码、GitHub 错误正文和限流重置时间生成可读的失败原因
+*****************************************************/
+QString describeNetworkFailure(const QNetworkReply* reply, const QByteArray& body)
+{
+    const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QString detail = summarizeFailureBody(body);
+
+    // 连接层失败没有 HTTP 状态码（如断开、超时），以中文结论为主，Qt 的描述作为补充。
+    if (httpStatus == 0)
+    {
+        const QString errorString = reply->errorString();
+        if (errorString.isEmpty() || errorString == QStringLiteral("Unknown error"))
+        {
+            return QStringLiteral("网络请求失败，请检查网络或代理设置。");
+        }
+        return QStringLiteral("网络请求失败（%1），请检查网络或代理设置。").arg(errorString);
+    }
+
+    // GitHub 对未登录请求按出口 IP 限制为每小时 60 次，重试时间可从响应头推算。
+    if (httpStatus == 403 && detail.contains(QStringLiteral("rate limit"), Qt::CaseInsensitive))
+    {
+        QString message = QStringLiteral(
+            "GitHub 访问频率受限：未登录请求每小时 60 次，且额度按出口 IP 计算。");
+        bool resetParsed = false;
+        const qint64 resetSeconds = reply->rawHeader(kRateLimitResetHeader).toLongLong(&resetParsed);
+        if (resetParsed)
+        {
+            const QDateTime resetTime = QDateTime::fromSecsSinceEpoch(resetSeconds);
+            const qint64 remainingSeconds = QDateTime::currentDateTimeUtc().secsTo(resetTime);
+            if (remainingSeconds > 0)
+            {
+                message += QStringLiteral("\n请约 %1 分钟后重试。").arg((remainingSeconds + 59) / 60);
+            }
+        }
+        return message;
+    }
+
+    if (httpStatus == 403)
+    {
+        return appendFailureDetail(QStringLiteral("GitHub 拒绝了更新请求（HTTP 403）"), detail);
+    }
+    if (httpStatus == 404)
+    {
+        return QStringLiteral("未找到 GitHub 发布信息（HTTP 404），请确认网络可以访问 github.com。");
+    }
+    if (httpStatus == 407)
+    {
+        return appendFailureDetail(QStringLiteral("代理服务器需要认证（HTTP 407）"), detail);
+    }
+    return appendFailureDetail(QStringLiteral("请求 GitHub 失败（HTTP %1）").arg(httpStatus), detail);
+}
+} // namespace
 
 /*****************************************************
 函数名称：UpdateManager::UpdateManager(QWidget* parentWindow, QObject* parent)
@@ -193,15 +302,16 @@ void UpdateManager::handleLatestReleaseReply(QNetworkReply* reply)
 {
     const QByteArray responseBody = reply->readAll();
     const QNetworkReply::NetworkError networkError = reply->error();
-    const QString errorString = reply->errorString();
-    reply->deleteLater();
     if (networkError != QNetworkReply::NoError)
     {
-        qWarning() << "Update check failed:" << networkError;
-        showUpdateError(QStringLiteral("无法检查更新：%1").arg(errorString));
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QString failureReason = describeNetworkFailure(reply, responseBody);
+        reply->deleteLater();
+        qWarning().noquote() << "Update check failed:" << networkError << "HTTP" << httpStatus;
+        showUpdateError(QStringLiteral("无法检查更新。\n%1").arg(failureReason));
         return;
     }
-
+    reply->deleteLater();
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(responseBody, &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject())
@@ -259,15 +369,16 @@ void UpdateManager::handleChecksumReply(QNetworkReply* reply)
 {
     const QByteArray responseBody = reply->readAll().trimmed();
     const QNetworkReply::NetworkError networkError = reply->error();
-    const QString errorString = reply->errorString();
-    reply->deleteLater();
     if (networkError != QNetworkReply::NoError)
     {
-        qWarning() << "Update checksum download failed:" << networkError;
-        showUpdateError(QStringLiteral("无法下载更新校验文件：%1").arg(errorString));
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QString failureReason = describeNetworkFailure(reply, responseBody);
+        reply->deleteLater();
+        qWarning().noquote() << "Update checksum download failed:" << networkError << "HTTP" << httpStatus;
+        showUpdateError(QStringLiteral("无法下载更新校验文件。\n%1").arg(failureReason));
         return;
     }
-
+    reply->deleteLater();
     static const QRegularExpression checksumPattern(
         QStringLiteral("^\\s*([0-9a-fA-F]{64})(?:\\s|$)"));
     const QRegularExpressionMatch checksumMatch = checksumPattern.match(QString::fromLatin1(responseBody));
@@ -306,20 +417,33 @@ void UpdateManager::handleInstallerData(QNetworkReply* reply)
 *****************************************************/
 void UpdateManager::handleInstallerFinished(QNetworkReply* reply)
 {
-    handleInstallerData(reply);
     const QNetworkReply::NetworkError networkError = reply->error();
-    const QString errorString = reply->errorString();
+    QByteArray responseBody;
+    if (networkError == QNetworkReply::NoError)
+    {
+        // 正常结束前写入剩余数据，避免漏掉最后一段安装包内容。
+        handleInstallerData(reply);
+    }
+    else
+    {
+        // 失败时保留响应正文用于诊断，并避免把错误页面当作安装包写入临时文件。
+        responseBody = reply->readAll();
+    }
+    const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QString failureReason = (networkError == QNetworkReply::NoError)
+                                      ? QString()
+                                      : describeNetworkFailure(reply, responseBody);
     reply->deleteLater();
     _installerReply = nullptr;
     _installerFile.close();
     if (networkError != QNetworkReply::NoError)
     {
-        qWarning() << "Update installer download failed:" << networkError;
+        qWarning().noquote() << "Update installer download failed:" << networkError << "HTTP" << httpStatus;
         discardInstaller();
         closeDownloadProgress();
         if (!_downloadCancelled)
         {
-            showUpdateError(QStringLiteral("更新安装包下载失败：%1").arg(errorString));
+            showUpdateError(QStringLiteral("更新安装包下载失败。\n%1").arg(failureReason));
         }
         return;
     }
