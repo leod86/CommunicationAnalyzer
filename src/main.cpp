@@ -5,6 +5,7 @@
 #include "ElaApplication.h"
 #include "app/MainWindow.h"
 #include "update/UpdateManager.h"
+#include "widgets/ComboBoxWheelGuard.h"
 
 /*****************************************************
 函数名称：int main(int argc, char *argv[])
@@ -21,6 +22,10 @@ int main(int argc, char* argv[])
 
     // 初始化Ela全局应用对象。
     eApp->init();
+
+    // 屏蔽全部下拉选择框的滚轮选值行为，避免误改选项。
+    ComboBoxWheelGuard comboBoxWheelGuard;
+    application.installEventFilter(&comboBoxWheelGuard);
 
     // 创建并显示通讯分析主窗口。
     MainWindow mainWindow;

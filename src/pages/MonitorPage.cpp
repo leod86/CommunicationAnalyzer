@@ -1105,7 +1105,7 @@ void MonitorPage::updatePorts(const QStringList& portNames, const QStringList& d
     }
     if (previouslyHadPorts && portNames.isEmpty())
     {
-        ElaMessageBar::warning(ElaMessageBarType::BottomRight,
+        ElaMessageBar::warning(ElaMessageBarType::BottomLeft,
                                QStringLiteral("串口设备"),
                                QStringLiteral("未检测到可用串口，设备可能已拔出"),
                                3000,
@@ -1146,7 +1146,7 @@ void MonitorPage::setConnectionState(bool connected, const QString& description)
     _statusText->setText(connected ? QStringLiteral("已连接：%1").arg(description) : description);
     if (connected && !wasConnected)
     {
-        ElaMessageBar::success(ElaMessageBarType::BottomRight,
+        ElaMessageBar::success(ElaMessageBarType::BottomLeft,
                                QStringLiteral("连接成功"),
                                description,
                                2500,
@@ -1154,7 +1154,7 @@ void MonitorPage::setConnectionState(bool connected, const QString& description)
     }
     else if (!connected && wasConnected)
     {
-        ElaMessageBar::information(ElaMessageBarType::BottomRight,
+        ElaMessageBar::information(ElaMessageBarType::BottomLeft,
                                    QStringLiteral("连接已断开"),
                                    description,
                                    2500,
@@ -1194,7 +1194,7 @@ void MonitorPage::appendSentData(const QByteArray& data)
 *****************************************************/
 void MonitorPage::showError(const QString& message)
 {
-    ElaMessageBar::error(ElaMessageBarType::BottomRight,
+    ElaMessageBar::error(ElaMessageBarType::BottomLeft,
                          QStringLiteral("操作失败"),
                          message,
                          3500,
@@ -1229,7 +1229,7 @@ void MonitorPage::handleConnectionToggled(bool checked)
         return;
     }
 
-    ElaMessageBar::information(ElaMessageBarType::BottomRight,
+    ElaMessageBar::information(ElaMessageBarType::BottomLeft,
                                QStringLiteral("串口连接"),
                                QStringLiteral("正在连接 %1").arg(_portComboBox->currentData().toString()),
                                1800,
@@ -1415,7 +1415,7 @@ void MonitorPage::handleContinuousSendToggled(bool checked)
     if (!checked)
     {
         _continuousSendTimer->stop();
-        ElaMessageBar::information(ElaMessageBarType::BottomRight,
+        ElaMessageBar::information(ElaMessageBarType::BottomLeft,
                                    QStringLiteral("连续发送"),
                                    QStringLiteral("连续发送已停止"),
                                    1800,
@@ -1444,7 +1444,7 @@ void MonitorPage::handleContinuousSendToggled(bool checked)
 
     _continuousSendTimer->start(sendInterval());
     emit sendDataRequested(data);
-    ElaMessageBar::success(ElaMessageBarType::BottomRight,
+    ElaMessageBar::success(ElaMessageBarType::BottomLeft,
                            QStringLiteral("连续发送"),
                            QStringLiteral("已启动，发送间隔 %1 ms").arg(sendInterval()),
                            2200,
@@ -1534,7 +1534,7 @@ void MonitorPage::handleLogToggled(bool checked)
         {
             _logFile->close();
         }
-        ElaMessageBar::information(ElaMessageBarType::BottomRight,
+        ElaMessageBar::information(ElaMessageBarType::BottomLeft,
                                    QStringLiteral("日志记录"),
                                    QStringLiteral("日志记录已停止"),
                                    1800,
@@ -1573,7 +1573,7 @@ void MonitorPage::handleLogToggled(bool checked)
     }
 
     settings.setValue(QStringLiteral("log/directory"), directoryPath);
-    ElaMessageBar::success(ElaMessageBarType::BottomRight,
+    ElaMessageBar::success(ElaMessageBarType::BottomLeft,
                            QStringLiteral("日志记录"),
                            QStringLiteral("日志已保存到：%1").arg(QDir::toNativeSeparators(_logFile->fileName())),
                            3000,
@@ -1593,7 +1593,7 @@ void MonitorPage::handlePauseScrollToggled(bool paused)
 
     if (paused)
     {
-        ElaMessageBar::information(ElaMessageBarType::BottomRight,
+        ElaMessageBar::information(ElaMessageBarType::BottomLeft,
                                    QStringLiteral("接收窗口"),
                                    QStringLiteral("自动滚动已暂停，数据仍在实时追加"),
                                    2200,
@@ -1602,7 +1602,7 @@ void MonitorPage::handlePauseScrollToggled(bool paused)
     }
 
     _trafficView->verticalScrollBar()->setValue(_trafficView->verticalScrollBar()->maximum());
-    ElaMessageBar::success(ElaMessageBarType::BottomRight,
+    ElaMessageBar::success(ElaMessageBarType::BottomLeft,
                            QStringLiteral("接收窗口"),
                            QStringLiteral("自动滚动已恢复"),
                            1800,
