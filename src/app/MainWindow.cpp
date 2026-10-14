@@ -2,7 +2,6 @@
 
 #include "communication/SerialController.h"
 #include "ElaToolBar.h"
-#include "mcp/SerialMcpServer.h"
 #include "pages/AboutPage.h"
 #include "pages/MonitorPage.h"
 #include "pages/SettingPage.h"
@@ -19,7 +18,6 @@ MainWindow::MainWindow(QWidget* parent)
     , _settingPage(new SettingPage(this))
     , _aboutPage(new AboutPage(this))
     , _serialController(new SerialController(this))
-    , _serialMcpServer(new SerialMcpServer(_serialController, this))
 {
     // 初始化窗口及业务信号连接。
     initializeWindow();
@@ -30,9 +28,6 @@ MainWindow::MainWindow(QWidget* parent)
 
     // 首次启动时刷新可用串口。
     _serialController->refreshPorts();
-
-    // 外观和 MCP 配置加载完成后按保存状态启动本地服务。
-    _serialMcpServer->setEnabled(_settingPage->mcpEnabled());
 }
 /*****************************************************
 函数名称：MainWindow::~MainWindow()
@@ -99,12 +94,6 @@ void MainWindow::initializeConnections()
             _monitorPage, &MonitorPage::appendSentData);
     connect(_serialController, &SerialController::errorOccurred,
             _monitorPage, &MonitorPage::showError);
-
-    // 设置页控制本地 MCP 服务，服务状态反向同步到设置页。
-    connect(_settingPage, &SettingPage::mcpEnabledChanged,
-            _serialMcpServer, &SerialMcpServer::setEnabled);
-    connect(_serialMcpServer, &SerialMcpServer::stateChanged,
-            _settingPage, &SettingPage::setMcpServiceState);
 
     // 仅在串口监视页面显示串口配置工具栏。
     connect(this, &ElaWindow::navigationNodeClicked, this,

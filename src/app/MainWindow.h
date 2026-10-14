@@ -6,7 +6,6 @@
 class AboutPage;
 class MonitorPage;
 class SerialController;
-class SerialMcpServer;
 class SettingPage;
 
 class MainWindow final : public ElaWindow
@@ -29,7 +28,6 @@ private:
     SettingPage* _settingPage{nullptr};
     AboutPage* _aboutPage{nullptr};
     SerialController* _serialController{nullptr};
-    SerialMcpServer* _serialMcpServer{nullptr};
     QString _monitorPageKey;
     QString _settingPageKey;
     QString _aboutPageKey;

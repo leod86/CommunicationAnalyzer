@@ -53,8 +53,6 @@ qt_add_executable(CommunicationAnalyzer
     src/pages/AboutPage.h
     src/communication/SerialController.cpp
     src/communication/SerialController.h
-    src/mcp/SerialMcpServer.cpp
-    src/mcp/SerialMcpServer.h
     src/pages/MonitorPage.cpp
     src/pages/MonitorPage.h
     src/pages/SettingPage.cpp
