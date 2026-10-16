@@ -2,6 +2,7 @@
 #define MONITORPAGE_H
 
 #include <QByteArray>
+#include <QColor>
 #include <QDateTime>
 #include <QList>
 #include <QStringList>
@@ -17,12 +18,15 @@ class ElaText;
 class ElaToolBar;
 class ElaToggleButton;
 class ElaToolButton;
+class ColorSwatchButton;
 class QFile;
 class QStandardItemModel;
 class QSplitter;
 class QStackedWidget;
 class QTimer;
 class QValidator;
+class QVBoxLayout;
+class QSettings;
 class TrafficTextEdit;
 
 class MonitorPage final : public ElaScrollPage
@@ -118,12 +122,66 @@ private:
         QValidator* hexValidator{nullptr};
     };
 
+    // 协议解析中的一个匹配字段及其编辑控件。
+    struct ProtocolField
+    {
+        QString name;
+        QByteArray pattern;
+        int length{0};
+        QColor color;
+        ElaLineEdit* nameEdit{nullptr};
+        ElaLineEdit* hexEdit{nullptr};
+        ElaLineEdit* lengthEdit{nullptr};
+        ColorSwatchButton* colorButton{nullptr};
+        ElaIconButton* removeButton{nullptr};
+        QWidget* rowWidget{nullptr};
+    };
+
+    // 一套可编辑并应用到报文的协议解析配置。
+    struct ProtocolConfig
+    {
+        QString name;
+        QList<ProtocolField> fields;
+    };
+
     // 创建页面控件和布局。
     void buildUi();
     // 创建放置在主窗口顶部的串口配置工具栏。
     ElaToolBar* buildSerialToolBar();
     // 创建右侧多字符串快捷发送配置区域。
     QWidget* buildMultiSendPanel();
+    // 创建协议解析配置页面。
+    QWidget* buildProtocolPanel();
+    // 重建配置选择器并选中指定配置。
+    void refreshProtocolConfigComboBox(int selectedConfigIndex);
+    // 按当前配置重建字段编辑行。
+    void rebuildProtocolFieldRows();
+    // 新建一个协议配置并切换为当前配置。
+    void addProtocolConfig();
+    // 删除当前协议配置。
+    void removeCurrentProtocolConfig();
+    // 在当前配置末尾新增一个字段。
+    void addProtocolField();
+    // 删除指定字段并重建列表。
+    void removeProtocolField(int fieldIndex);
+    // 弹出颜色选择器修改指定字段的颜色。
+    void chooseProtocolFieldColor(int fieldIndex);
+    // 处理配置选择器切换。
+    void handleProtocolConfigChanged();
+    // 请求防抖重绘历史报文。
+    void scheduleProtocolRerender();
+    // 计算一帧数据中每个字节命中的字段序号，未命中为-1。
+    QList<int> computeProtocolByteColors(const QByteArray& data) const;
+    // 获取当前配置中全部字段的颜色。
+    QList<QColor> activeProtocolFieldColors() const;
+    // 获取当前配置中指定序号的字段，越界返回空。
+    ProtocolField* currentProtocolField(int fieldIndex);
+    // 按匹配HEX同步字段长度输入框的取值与可编辑状态。
+    void updateProtocolFieldLengthState(ProtocolField& field);
+    // 从本地设置恢复协议解析配置。
+    void loadProtocolSettings(QSettings& settings);
+    // 将协议解析配置写入本地设置。
+    void saveProtocolSettings(QSettings& settings);
     // 从本地设置中恢复用户配置。
     void loadSettings();
     // 将当前用户配置保存到本地设置。
@@ -200,6 +258,15 @@ private:
     QTimer* _trafficSearchTimer{nullptr};
     QList<TrafficRecord> _trafficRecords;
     QList<QuickSendItem> _quickSendItems;
+    ElaComboBox* _protocolConfigComboBox{nullptr};
+    ElaIconButton* _protocolAddConfigButton{nullptr};
+    ElaIconButton* _protocolRemoveConfigButton{nullptr};
+    ElaPushButton* _protocolAddFieldButton{nullptr};
+    QWidget* _protocolFieldListWidget{nullptr};
+    QVBoxLayout* _protocolFieldListLayout{nullptr};
+    QTimer* _protocolRerenderTimer{nullptr};
+    QList<ProtocolConfig> _protocolConfigs;
+    int _nextProtocolConfigNumber{1};
     QString _preferredPortName;
     QString _trafficSearchQuery;
     int _nextTrafficSearchBlockId{0};

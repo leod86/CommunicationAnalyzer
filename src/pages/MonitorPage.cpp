@@ -1,6 +1,8 @@
 #include "pages/MonitorPage.h"
 
+#include "ElaColorDialog.h"
 #include "ElaComboBox.h"
+#include "ElaContentDialog.h"
 #include "ElaIconButton.h"
 #include "ElaLineEdit.h"
 #include "ElaListView.h"
@@ -12,6 +14,7 @@
 #include "ElaToolBar.h"
 #include "ElaToggleButton.h"
 #include "ElaToolButton.h"
+#include "widgets/ColorSwatchButton.h"
 #include "widgets/TrafficTextEdit.h"
 
 #include <algorithm>
@@ -22,9 +25,13 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIntValidator>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QComboBox>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QSerialPort>
@@ -232,6 +239,68 @@ void ResponsiveRowWidget::updateResponsiveLayout(int availableWidth)
         _rootLayout->addLayout(rowLayout);
     }
     updateGeometry();
+}
+
+// 协议解析中每个配置允许的最大字段数。
+constexpr int protocolMaxFieldCount = 16;
+
+// 新建协议字段时轮换使用的默认标记颜色。
+const QList<QColor> protocolDefaultColors = {
+    QColor(QStringLiteral("#E53935")),
+    QColor(QStringLiteral("#FB8C00")),
+    QColor(QStringLiteral("#FDD835")),
+    QColor(QStringLiteral("#43A047")),
+    QColor(QStringLiteral("#00897B")),
+    QColor(QStringLiteral("#1E88E5")),
+    QColor(QStringLiteral("#8E24AA")),
+    QColor(QStringLiteral("#D81B60"))};
+
+/*****************************************************
+函数名称：void insertHexTextWithByteColors(QTextCursor& cursor, const QByteArray& data, const QList<int>& byteColors, const QList<QColor>& fieldColors, const QTextCharFormat& baseFormat)
+入口参数：cursor为目标光标，data为原始字节，byteColors为每字节命中的字段序号，fieldColors为字段颜色，baseFormat为默认HEX格式
+出口参数：无
+函数功能：按连续同色段把HEX文本插入光标，命中字节使用字段背景色
+*****************************************************/
+void insertHexTextWithByteColors(QTextCursor& cursor,
+                                 const QByteArray& data,
+                                 const QList<int>& byteColors,
+                                 const QList<QColor>& fieldColors,
+                                 const QTextCharFormat& baseFormat)
+{
+    const int byteCount = data.size();
+    int index = 0;
+    while (index < byteCount)
+    {
+        const int fieldIndex = index < byteColors.size() ? byteColors.at(index) : -1;
+        int runEnd = index + 1;
+        while (runEnd < byteCount
+               && (runEnd < byteColors.size() ? byteColors.at(runEnd) : -1) == fieldIndex)
+        {
+            ++runEnd;
+        }
+
+        QString runText;
+        runText.reserve((runEnd - index) * 3);
+        for (int byteIndex = index; byteIndex < runEnd; ++byteIndex)
+        {
+            if (byteIndex > 0)
+            {
+                runText.append(QLatin1Char(' '));
+            }
+            const int value = static_cast<quint8>(data.at(byteIndex));
+            runText.append(QStringLiteral("%1").arg(value, 2, 16, QLatin1Char('0')).toUpper());
+        }
+
+        QTextCharFormat runFormat = baseFormat;
+        if (fieldIndex >= 0 && fieldIndex < fieldColors.size())
+        {
+            const QColor color = fieldColors.at(fieldIndex);
+            runFormat.setBackground(color);
+            runFormat.setForeground(color.lightness() < 128 ? QColor(Qt::white) : QColor(Qt::black));
+        }
+        cursor.insertText(runText, runFormat);
+        index = runEnd;
+    }
 }
 }
 
@@ -594,17 +663,19 @@ void MonitorPage::buildUi()
 
     _sidePanelPivot = new ElaPivot(sidePanel);
     _sidePanelPivot->setFixedHeight(34);
-    _sidePanelPivot->setTextPixelSize(14);
-    _sidePanelPivot->setPivotSpacing(10);
-    _sidePanelPivot->setMarkWidth(64);
-    _sidePanelPivot->appendPivot(QStringLiteral("单词发送"));
+    _sidePanelPivot->setTextPixelSize(13);
+    _sidePanelPivot->setPivotSpacing(6);
+    _sidePanelPivot->setMarkWidth(52);
+    _sidePanelPivot->appendPivot(QStringLiteral("单条发送"));
     _sidePanelPivot->appendPivot(QStringLiteral("多字符串发送"));
     _sidePanelPivot->appendPivot(QStringLiteral("报文搜索"));
+    _sidePanelPivot->appendPivot(QStringLiteral("协议解析"));
 
     _sidePanelStackedWidget = new QStackedWidget(sidePanel);
     _sidePanelStackedWidget->addWidget(singleSendPanel);
     _sidePanelStackedWidget->addWidget(buildMultiSendPanel());
     _sidePanelStackedWidget->addWidget(trafficSearchPanel);
+    _sidePanelStackedWidget->addWidget(buildProtocolPanel());
     sidePanelLayout->addWidget(_sidePanelPivot);
     sidePanelLayout->addWidget(_sidePanelStackedWidget, 1);
 
@@ -877,6 +948,789 @@ QWidget* MonitorPage::buildMultiSendPanel()
 }
 
 /*****************************************************
+函数名称：QWidget* MonitorPage::buildProtocolPanel()
+入口参数：无
+出口参数：协议解析配置页面
+函数功能：创建配置选择器、字段编辑列表和新增字段按钮
+*****************************************************/
+QWidget* MonitorPage::buildProtocolPanel()
+{
+    auto* panel = new QWidget(this);
+    QFont compactControlFont = font();
+    if (compactControlFont.pointSizeF() > 0)
+    {
+        compactControlFont.setPointSizeF(compactControlFont.pointSizeF() * 0.85);
+    }
+    else if (compactControlFont.pixelSize() > 0)
+    {
+        compactControlFont.setPixelSize(qMax(1, qRound(compactControlFont.pixelSize() * 0.85)));
+    }
+
+    auto* layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(7);
+
+    auto* selectorRow = new QHBoxLayout();
+    selectorRow->setContentsMargins(0, 0, 0, 0);
+    selectorRow->setSpacing(5);
+
+    _protocolConfigComboBox = new ElaComboBox(panel);
+    _protocolConfigComboBox->setFixedHeight(30);
+    _protocolConfigComboBox->setFont(compactControlFont);
+    _protocolConfigComboBox->setToolTip(QStringLiteral("选择要应用到报文的协议配置"));
+
+    _protocolAddConfigButton = new ElaIconButton(ElaIconType::Plus, 14, 30, 30, panel);
+    _protocolAddConfigButton->setToolTip(QStringLiteral("新建协议配置"));
+
+    _protocolRemoveConfigButton = new ElaIconButton(ElaIconType::TrashCan, 14, 30, 30, panel);
+    _protocolRemoveConfigButton->setToolTip(QStringLiteral("删除当前协议配置"));
+
+    selectorRow->addWidget(_protocolConfigComboBox, 1);
+    selectorRow->addWidget(_protocolAddConfigButton);
+    selectorRow->addWidget(_protocolRemoveConfigButton);
+    layout->addLayout(selectorRow);
+
+    auto* scrollArea = new ElaScrollArea(panel);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+
+    _protocolFieldListWidget = new QWidget(scrollArea);
+    _protocolFieldListLayout = new QVBoxLayout(_protocolFieldListWidget);
+    _protocolFieldListLayout->setContentsMargins(0, 0, 4, 0);
+    _protocolFieldListLayout->setSpacing(7);
+    _protocolFieldListLayout->addStretch();
+    scrollArea->setWidget(_protocolFieldListWidget);
+    layout->addWidget(scrollArea, 1);
+
+    _protocolAddFieldButton = new ElaPushButton(QStringLiteral("+ 新增字段"), panel);
+    _protocolAddFieldButton->setFixedHeight(30);
+    _protocolAddFieldButton->setFont(compactControlFont);
+    _protocolAddFieldButton->setToolTip(QStringLiteral("为当前配置新增一个字段；字段按长度依次排列成一段特征"));
+    layout->addWidget(_protocolAddFieldButton);
+
+    _protocolRerenderTimer = new QTimer(this);
+    _protocolRerenderTimer->setSingleShot(true);
+    _protocolRerenderTimer->setInterval(120);
+    connect(_protocolRerenderTimer, &QTimer::timeout, this, &MonitorPage::renderTraffic);
+
+    connect(_protocolConfigComboBox, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+        handleProtocolConfigChanged();
+    });
+    connect(_protocolAddConfigButton, &ElaIconButton::clicked, this, &MonitorPage::addProtocolConfig);
+    connect(_protocolRemoveConfigButton, &ElaIconButton::clicked,
+            this, &MonitorPage::removeCurrentProtocolConfig);
+    connect(_protocolAddFieldButton, &ElaPushButton::clicked, this, &MonitorPage::addProtocolField);
+
+    return panel;
+}
+
+/*****************************************************
+函数名称：void MonitorPage::refreshProtocolConfigComboBox(int selectedConfigIndex)
+入口参数：selectedConfigIndex为要选中的配置序号，-1表示不启用
+出口参数：无
+函数功能：按当前配置列表重建选择器并选中指定配置
+*****************************************************/
+void MonitorPage::refreshProtocolConfigComboBox(int selectedConfigIndex)
+{
+    if (_protocolConfigComboBox == nullptr)
+    {
+        return;
+    }
+
+    const QSignalBlocker blocker(_protocolConfigComboBox);
+    _protocolConfigComboBox->clear();
+    _protocolConfigComboBox->addItem(QStringLiteral("不启用"), -1);
+    for (int index = 0; index < _protocolConfigs.size(); ++index)
+    {
+        _protocolConfigComboBox->addItem(_protocolConfigs.at(index).name, index);
+    }
+
+    const int comboIndex = selectedConfigIndex < 0 ? 0 : selectedConfigIndex + 1;
+    _protocolConfigComboBox->setCurrentIndex(
+        qBound(0, comboIndex, _protocolConfigComboBox->count() - 1));
+}
+
+/*****************************************************
+函数名称：void MonitorPage::rebuildProtocolFieldRows()
+入口参数：无
+出口参数：无
+函数功能：清空字段列表并按当前配置重新创建每一行编辑控件
+*****************************************************/
+void MonitorPage::rebuildProtocolFieldRows()
+{
+    if (_protocolFieldListLayout == nullptr)
+    {
+        return;
+    }
+
+    while (QLayoutItem* item = _protocolFieldListLayout->takeAt(0))
+    {
+        if (QWidget* widget = item->widget())
+        {
+            widget->deleteLater();
+        }
+        delete item;
+    }
+
+    const int configIndex = _protocolConfigComboBox == nullptr
+        ? -1
+        : _protocolConfigComboBox->currentData().toInt();
+    if (configIndex >= 0 && configIndex < _protocolConfigs.size())
+    {
+        QFont compactControlFont = font();
+        if (compactControlFont.pointSizeF() > 0)
+        {
+            compactControlFont.setPointSizeF(compactControlFont.pointSizeF() * 0.85);
+        }
+        else if (compactControlFont.pixelSize() > 0)
+        {
+            compactControlFont.setPixelSize(qMax(1, qRound(compactControlFont.pixelSize() * 0.85)));
+        }
+
+        QList<ProtocolField>& fields = _protocolConfigs[configIndex].fields;
+        for (int fieldIndex = 0; fieldIndex < fields.size(); ++fieldIndex)
+        {
+            ProtocolField& field = fields[fieldIndex];
+
+            auto* rowWidget = new QWidget(_protocolFieldListWidget);
+            auto* rowLayout = new QHBoxLayout(rowWidget);
+            rowLayout->setContentsMargins(0, 0, 0, 0);
+            rowLayout->setSpacing(5);
+            field.rowWidget = rowWidget;
+
+            field.colorButton = new ColorSwatchButton(rowWidget);
+            field.colorButton->setColor(field.color);
+
+            field.nameEdit = new ElaLineEdit(rowWidget);
+            field.nameEdit->setPlaceholderText(QStringLiteral("名称"));
+            field.nameEdit->setClearButtonEnabled(true);
+            field.nameEdit->setFixedSize(60, 30);
+            field.nameEdit->setFont(compactControlFont);
+            field.nameEdit->setText(field.name);
+            field.nameEdit->setToolTip(QStringLiteral("字段名称，仅用于识别"));
+
+            field.hexEdit = new ElaLineEdit(rowWidget);
+            field.hexEdit->setPlaceholderText(QStringLiteral("匹配HEX"));
+            field.hexEdit->setClearButtonEnabled(true);
+            field.hexEdit->setFixedHeight(30);
+            field.hexEdit->setFont(compactControlFont);
+            field.hexEdit->setValidator(new QRegularExpressionValidator(
+                QRegularExpression(QStringLiteral("^[0-9A-Fa-f\\s]*$")), field.hexEdit));
+            field.hexEdit->setText(QString::fromLatin1(field.pattern.toHex(' ').toUpper()));
+            field.hexEdit->setToolTip(QStringLiteral("只接受十六进制，填写后自动统计长度；留空表示该字段为任意字节"));
+
+            field.lengthEdit = new ElaLineEdit(rowWidget);
+            field.lengthEdit->setPlaceholderText(QStringLiteral("长度"));
+            field.lengthEdit->setValidator(new QIntValidator(0, 4096, field.lengthEdit));
+            field.lengthEdit->setFixedSize(42, 30);
+            field.lengthEdit->setFont(compactControlFont);
+            field.lengthEdit->setAlignment(Qt::AlignCenter);
+            field.lengthEdit->setText(field.length > 0 ? QString::number(field.length) : QString());
+
+            field.removeButton = new ElaIconButton(ElaIconType::Xmark, 12, 26, 26, rowWidget);
+            field.removeButton->setToolTip(QStringLiteral("删除该字段"));
+
+            rowLayout->addWidget(field.colorButton);
+            rowLayout->addWidget(field.nameEdit);
+            rowLayout->addWidget(field.hexEdit, 1);
+            rowLayout->addWidget(field.lengthEdit);
+            rowLayout->addWidget(field.removeButton);
+            _protocolFieldListLayout->addWidget(rowWidget);
+
+            connect(field.nameEdit, &ElaLineEdit::textChanged, this,
+                    [this, fieldIndex](const QString& text) {
+                ProtocolField* target = currentProtocolField(fieldIndex);
+                if (target)
+                {
+                    target->name = text;
+                }
+            });
+            connect(field.nameEdit, &ElaLineEdit::editingFinished, this, [this]() {
+                saveSettings();
+            });
+            connect(field.hexEdit, &ElaLineEdit::textChanged, this,
+                    [this, fieldIndex](const QString&) {
+                ProtocolField* target = currentProtocolField(fieldIndex);
+                if (target == nullptr || target->hexEdit == nullptr)
+                {
+                    return;
+                }
+                formatHexLineEdit(target->hexEdit);
+                QString normalized = target->hexEdit->text();
+                normalized.remove(QRegularExpression(QStringLiteral("\\s+")));
+                if (normalized.size() % 2 != 0)
+                {
+                    normalized.chop(1);
+                }
+                target->pattern = QByteArray::fromHex(normalized.toLatin1());
+                updateProtocolFieldLengthState(*target);
+                scheduleProtocolRerender();
+            });
+            connect(field.hexEdit, &ElaLineEdit::editingFinished, this, [this]() {
+                saveSettings();
+            });
+            connect(field.lengthEdit, &ElaLineEdit::textChanged, this,
+                    [this, fieldIndex](const QString& text) {
+                ProtocolField* target = currentProtocolField(fieldIndex);
+                if (target == nullptr)
+                {
+                    return;
+                }
+                bool valid = false;
+                const int value = text.trimmed().toInt(&valid);
+                target->length = (valid && value > 0) ? value : 0;
+                scheduleProtocolRerender();
+            });
+            connect(field.lengthEdit, &ElaLineEdit::editingFinished, this, [this]() {
+                saveSettings();
+            });
+            connect(field.colorButton, &ColorSwatchButton::clicked, this, [this, fieldIndex]() {
+                chooseProtocolFieldColor(fieldIndex);
+            });
+            connect(field.removeButton, &ElaIconButton::clicked, this, [this, fieldIndex]() {
+                removeProtocolField(fieldIndex);
+            });
+
+            updateProtocolFieldLengthState(field);
+        }
+    }
+
+    _protocolFieldListLayout->addStretch();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::addProtocolConfig()
+入口参数：无
+出口参数：无
+函数功能：新建一个自动命名的协议配置并切换为当前配置
+*****************************************************/
+void MonitorPage::addProtocolConfig()
+{
+    ProtocolConfig config;
+    config.name = QStringLiteral("配置%1").arg(_nextProtocolConfigNumber);
+    ++_nextProtocolConfigNumber;
+    _protocolConfigs.append(config);
+
+    refreshProtocolConfigComboBox(_protocolConfigs.size() - 1);
+    rebuildProtocolFieldRows();
+    scheduleProtocolRerender();
+    saveSettings();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::removeCurrentProtocolConfig()
+入口参数：无
+出口参数：无
+函数功能：确认后删除当前协议配置并回到不启用状态
+*****************************************************/
+void MonitorPage::removeCurrentProtocolConfig()
+{
+    const int configIndex = _protocolConfigComboBox == nullptr
+        ? -1
+        : _protocolConfigComboBox->currentData().toInt();
+    if (configIndex < 0 || configIndex >= _protocolConfigs.size())
+    {
+        ElaMessageBar::information(ElaMessageBarType::BottomLeft,
+                                   QStringLiteral("协议解析"),
+                                   QStringLiteral("当前没有可删除的配置"),
+                                   2000,
+                                   this);
+        return;
+    }
+
+    if (!_protocolConfigs.at(configIndex).fields.isEmpty())
+    {
+        auto* dialog = new ElaContentDialog(this);
+        auto* content = new QWidget(dialog);
+        auto* contentLayout = new QVBoxLayout(content);
+        contentLayout->setContentsMargins(15, 25, 15, 10);
+        auto* titleText = new ElaText(QStringLiteral("删除配置"), content);
+        titleText->setTextStyle(ElaTextType::Title);
+        auto* subTitleText = new ElaText(
+            QStringLiteral("确定要删除“%1”及其全部字段吗？").arg(_protocolConfigs.at(configIndex).name),
+            content);
+        subTitleText->setTextStyle(ElaTextType::Body);
+        subTitleText->setWordWrap(true);
+        contentLayout->addWidget(titleText);
+        contentLayout->addSpacing(2);
+        contentLayout->addWidget(subTitleText);
+        contentLayout->addStretch();
+        dialog->setCentralWidget(content);
+        dialog->setLeftButtonText(QStringLiteral("取消"));
+        dialog->setRightButtonText(QStringLiteral("删除"));
+        // 隐藏未使用的中间按钮，其默认文本为 minimum。
+        const QList<QPushButton*> dialogButtons = dialog->findChildren<QPushButton*>();
+        for (QPushButton* button : dialogButtons)
+        {
+            if (button->text() == QStringLiteral("minimum"))
+            {
+                button->hide();
+            }
+        }
+        dialog->resize(400, 190);
+        dialog->exec();
+        const bool accepted = dialog->result() == QDialog::Accepted;
+        dialog->deleteLater();
+        if (!accepted)
+        {
+            return;
+        }
+    }
+
+    _protocolConfigs.removeAt(configIndex);
+    refreshProtocolConfigComboBox(-1);
+    rebuildProtocolFieldRows();
+    scheduleProtocolRerender();
+    saveSettings();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::addProtocolField()
+入口参数：无
+出口参数：无
+函数功能：在当前配置末尾新增一个带默认颜色的字段
+*****************************************************/
+void MonitorPage::addProtocolField()
+{
+    const int configIndex = _protocolConfigComboBox == nullptr
+        ? -1
+        : _protocolConfigComboBox->currentData().toInt();
+    if (configIndex < 0 || configIndex >= _protocolConfigs.size())
+    {
+        ElaMessageBar::warning(ElaMessageBarType::BottomLeft,
+                               QStringLiteral("协议解析"),
+                               QStringLiteral("请先新建或选择一个配置"),
+                               2200,
+                               this);
+        return;
+    }
+
+    ProtocolConfig& config = _protocolConfigs[configIndex];
+    if (config.fields.size() >= protocolMaxFieldCount)
+    {
+        ElaMessageBar::warning(ElaMessageBarType::BottomLeft,
+                               QStringLiteral("协议解析"),
+                               QStringLiteral("每个配置最多 %1 个字段").arg(protocolMaxFieldCount),
+                               2200,
+                               this);
+        return;
+    }
+
+    ProtocolField field;
+    field.color = protocolDefaultColors.at(config.fields.size() % protocolDefaultColors.size());
+    config.fields.append(field);
+    rebuildProtocolFieldRows();
+    scheduleProtocolRerender();
+    saveSettings();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::removeProtocolField(int fieldIndex)
+入口参数：fieldIndex为要删除的字段序号
+出口参数：无
+函数功能：删除当前配置中的指定字段并重建列表
+*****************************************************/
+void MonitorPage::removeProtocolField(int fieldIndex)
+{
+    const int configIndex = _protocolConfigComboBox == nullptr
+        ? -1
+        : _protocolConfigComboBox->currentData().toInt();
+    if (configIndex < 0 || configIndex >= _protocolConfigs.size())
+    {
+        return;
+    }
+
+    ProtocolConfig& config = _protocolConfigs[configIndex];
+    if (fieldIndex < 0 || fieldIndex >= config.fields.size())
+    {
+        return;
+    }
+
+    config.fields.removeAt(fieldIndex);
+    rebuildProtocolFieldRows();
+    scheduleProtocolRerender();
+    saveSettings();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::chooseProtocolFieldColor(int fieldIndex)
+入口参数：fieldIndex为字段序号
+出口参数：无
+函数功能：弹出颜色选择器并应用用户确认的标记颜色
+*****************************************************/
+void MonitorPage::chooseProtocolFieldColor(int fieldIndex)
+{
+    ProtocolField* field = currentProtocolField(fieldIndex);
+    if (field == nullptr)
+    {
+        return;
+    }
+
+    auto* dialog = new ElaColorDialog(this);
+    dialog->setCurrentColor(field->color);
+    QColor selectedColor;
+    bool accepted = false;
+    connect(dialog, &ElaColorDialog::colorSelected, this, [&selectedColor, &accepted](const QColor& color) {
+        selectedColor = color;
+        accepted = true;
+    });
+    dialog->exec();
+    dialog->deleteLater();
+
+    if (!accepted || !selectedColor.isValid())
+    {
+        return;
+    }
+
+    ProtocolField* target = currentProtocolField(fieldIndex);
+    if (target == nullptr)
+    {
+        return;
+    }
+
+    target->color = selectedColor;
+    if (target->colorButton)
+    {
+        target->colorButton->setColor(selectedColor);
+    }
+    scheduleProtocolRerender();
+    saveSettings();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::handleProtocolConfigChanged()
+入口参数：无
+出口参数：无
+函数功能：切换配置后重建字段列表并按新配置重绘报文
+*****************************************************/
+void MonitorPage::handleProtocolConfigChanged()
+{
+    rebuildProtocolFieldRows();
+    scheduleProtocolRerender();
+    saveSettings();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::scheduleProtocolRerender()
+入口参数：无
+出口参数：无
+函数功能：合并连续编辑，延迟重绘历史报文
+*****************************************************/
+void MonitorPage::scheduleProtocolRerender()
+{
+    if (_protocolRerenderTimer == nullptr)
+    {
+        return;
+    }
+
+    _protocolRerenderTimer->start();
+}
+
+/*****************************************************
+函数名称：MonitorPage::ProtocolField* MonitorPage::currentProtocolField(int fieldIndex)
+入口参数：fieldIndex为字段序号
+出口参数：当前配置中对应字段的指针，越界返回空
+函数功能：按选择器定位当前配置中的字段，供编辑回调安全访问
+*****************************************************/
+MonitorPage::ProtocolField* MonitorPage::currentProtocolField(int fieldIndex)
+{
+    if (_protocolConfigComboBox == nullptr)
+    {
+        return nullptr;
+    }
+
+    const int configIndex = _protocolConfigComboBox->currentData().toInt();
+    if (configIndex < 0 || configIndex >= _protocolConfigs.size())
+    {
+        return nullptr;
+    }
+
+    QList<ProtocolField>& fields = _protocolConfigs[configIndex].fields;
+    if (fieldIndex < 0 || fieldIndex >= fields.size())
+    {
+        return nullptr;
+    }
+    return &fields[fieldIndex];
+}
+
+/*****************************************************
+函数名称：void MonitorPage::updateProtocolFieldLengthState(ProtocolField& field)
+入口参数：field为需要同步的字段
+出口参数：无
+函数功能：匹配HEX非空时自动统计并锁定长度，为空时允许手工填写任意长度
+*****************************************************/
+void MonitorPage::updateProtocolFieldLengthState(ProtocolField& field)
+{
+    if (field.lengthEdit == nullptr)
+    {
+        return;
+    }
+
+    if (!field.pattern.isEmpty())
+    {
+        field.length = field.pattern.size();
+        {
+            const QSignalBlocker blocker(field.lengthEdit);
+            field.lengthEdit->setText(QString::number(field.length));
+        }
+        field.lengthEdit->setReadOnly(true);
+        field.lengthEdit->setToolTip(
+            QStringLiteral("由匹配HEX自动统计（%1字节）").arg(field.length));
+        return;
+    }
+
+    field.lengthEdit->setReadOnly(false);
+    field.lengthEdit->setToolTip(QStringLiteral("匹配HEX为空，填写该字段占用的任意字节数"));
+}
+
+/*****************************************************
+函数名称：QList<int> MonitorPage::computeProtocolByteColors(const QByteArray& data) const
+入口参数：data为一帧原始字节数据
+出口参数：每个字节命中的字段序号列表，未命中为-1
+函数功能：按字段长度连续排列成一段特征，匹配HEX须出现在字段起始字节，整段命中后给出标记序号
+*****************************************************/
+QList<int> MonitorPage::computeProtocolByteColors(const QByteArray& data) const
+{
+    QList<int> byteColors(data.size(), -1);
+    if (data.isEmpty() || _protocolConfigComboBox == nullptr)
+    {
+        return byteColors;
+    }
+
+    const int configIndex = _protocolConfigComboBox->currentData().toInt();
+    if (configIndex < 0 || configIndex >= _protocolConfigs.size())
+    {
+        return byteColors;
+    }
+
+    const QList<ProtocolField>& fields = _protocolConfigs.at(configIndex).fields;
+
+    // 连续帧布局：每个字段按“长度”占用固定字节，匹配HEX从该字段起始字节开始比对，
+    // 匹配HEX为空表示该字段为任意字节，未填写长度与匹配HEX的行不参与布局。
+    struct LayoutField
+    {
+        int offset{0};
+        int length{0};
+        QByteArray pattern;
+        int fieldIndex{0};
+    };
+
+    QList<LayoutField> layout;
+    int frameLength = 0;
+    bool hasPattern = false;
+    for (int fieldIndex = 0; fieldIndex < fields.size(); ++fieldIndex)
+    {
+        const ProtocolField& field = fields.at(fieldIndex);
+        // 匹配HEX决定字段长度；匹配HEX为空时使用手工填写的任意长度。
+        const int fieldLength = field.pattern.isEmpty() ? field.length : field.pattern.size();
+        if (fieldLength <= 0)
+        {
+            continue;
+        }
+
+        LayoutField layoutField;
+        layoutField.offset = frameLength;
+        layoutField.length = fieldLength;
+        layoutField.pattern = field.pattern;
+        layoutField.fieldIndex = fieldIndex;
+        layout.append(layoutField);
+        frameLength += fieldLength;
+        hasPattern = hasPattern || !field.pattern.isEmpty();
+    }
+
+    // 没有任何匹配HEX时视为未配置，避免仅凭长度就标记整帧。
+    if (!hasPattern || frameLength <= 0 || frameLength > data.size())
+    {
+        return byteColors;
+    }
+
+    // 严格按“长度+HEX”连续匹配整段特征，命中处按各字段占用字节着色。
+    for (int start = 0; start + frameLength <= data.size();)
+    {
+        bool matched = true;
+        for (const LayoutField& layoutField : layout)
+        {
+            if (layoutField.pattern.isEmpty())
+            {
+                continue;
+            }
+
+            const int patternStart = start + layoutField.offset;
+            if (patternStart + layoutField.pattern.size() > data.size()
+                || data.mid(patternStart, layoutField.pattern.size()) != layoutField.pattern)
+            {
+                matched = false;
+                break;
+            }
+        }
+
+        if (!matched)
+        {
+            ++start;
+            continue;
+        }
+
+        for (const LayoutField& layoutField : layout)
+        {
+            for (int byteIndex = start + layoutField.offset;
+                 byteIndex < start + layoutField.offset + layoutField.length;
+                 ++byteIndex)
+            {
+                if (byteColors.at(byteIndex) < 0)
+                {
+                    byteColors[byteIndex] = layoutField.fieldIndex;
+                }
+            }
+        }
+        start += frameLength;
+    }
+
+    return byteColors;
+}
+
+/*****************************************************
+函数名称：QList<QColor> MonitorPage::activeProtocolFieldColors() const
+入口参数：无
+出口参数：当前配置全部字段的颜色列表
+函数功能：向HEX插入逻辑提供与字段序号对应的标记颜色
+*****************************************************/
+QList<QColor> MonitorPage::activeProtocolFieldColors() const
+{
+    QList<QColor> colors;
+    if (_protocolConfigComboBox == nullptr)
+    {
+        return colors;
+    }
+
+    const int configIndex = _protocolConfigComboBox->currentData().toInt();
+    if (configIndex < 0 || configIndex >= _protocolConfigs.size())
+    {
+        return colors;
+    }
+
+    const QList<ProtocolField>& fields = _protocolConfigs.at(configIndex).fields;
+    colors.reserve(fields.size());
+    for (const ProtocolField& field : fields)
+    {
+        colors.append(field.color);
+    }
+    return colors;
+}
+
+/*****************************************************
+函数名称：void MonitorPage::loadProtocolSettings(QSettings& settings)
+入口参数：settings为本地设置
+出口参数：无
+函数功能：从本地设置恢复全部协议配置、字段和当前选择
+*****************************************************/
+void MonitorPage::loadProtocolSettings(QSettings& settings)
+{
+    _protocolConfigs.clear();
+
+    const QString configsJson = settings.value(QStringLiteral("protocol/configs")).toString();
+    if (!configsJson.isEmpty())
+    {
+        const QJsonDocument document = QJsonDocument::fromJson(configsJson.toUtf8());
+        if (document.isArray())
+        {
+            const QJsonArray configsArray = document.array();
+            for (const QJsonValue& configValue : configsArray)
+            {
+                const QJsonObject configObject = configValue.toObject();
+                ProtocolConfig config;
+                config.name = configObject.value(QStringLiteral("name")).toString();
+
+                const QJsonArray fieldsArray = configObject.value(QStringLiteral("fields")).toArray();
+                for (int fieldIndex = 0; fieldIndex < fieldsArray.size(); ++fieldIndex)
+                {
+                    const QJsonObject fieldObject = fieldsArray.at(fieldIndex).toObject();
+                    ProtocolField field;
+                    field.name = fieldObject.value(QStringLiteral("name")).toString();
+
+                    QString hexText = fieldObject.value(QStringLiteral("hex")).toString();
+                    hexText.remove(QRegularExpression(QStringLiteral("\\s+")));
+                    if (hexText.size() % 2 != 0)
+                    {
+                        hexText.chop(1);
+                    }
+                    field.pattern = QByteArray::fromHex(hexText.toLatin1());
+                    field.length = fieldObject.value(QStringLiteral("length")).toInt();
+
+                    const QColor color(fieldObject.value(QStringLiteral("color")).toString());
+                    field.color = color.isValid()
+                        ? color
+                        : protocolDefaultColors.at(config.fields.size() % protocolDefaultColors.size());
+                    config.fields.append(field);
+                }
+                _protocolConfigs.append(config);
+            }
+        }
+    }
+
+    if (_protocolConfigs.isEmpty())
+    {
+        ProtocolConfig config;
+        config.name = QStringLiteral("配置1");
+        _protocolConfigs.append(config);
+    }
+
+    int maxNumber = 0;
+    static const QRegularExpression namePattern(QStringLiteral("^配置(\\d+)$"));
+    for (const ProtocolConfig& config : _protocolConfigs)
+    {
+        const QRegularExpressionMatch match = namePattern.match(config.name);
+        if (match.hasMatch())
+        {
+            maxNumber = qMax(maxNumber, match.captured(1).toInt());
+        }
+    }
+    _nextProtocolConfigNumber = maxNumber + 1;
+
+    const int activeIndex = settings.value(QStringLiteral("protocol/activeIndex"), -1).toInt();
+    refreshProtocolConfigComboBox(activeIndex);
+    rebuildProtocolFieldRows();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::saveProtocolSettings(QSettings& settings)
+入口参数：settings为本地设置
+出口参数：无
+函数功能：将全部协议配置、字段和当前选择序列化到本地设置
+*****************************************************/
+void MonitorPage::saveProtocolSettings(QSettings& settings)
+{
+    QJsonArray configsArray;
+    for (const ProtocolConfig& config : _protocolConfigs)
+    {
+        QJsonObject configObject;
+        configObject.insert(QStringLiteral("name"), config.name);
+
+        QJsonArray fieldsArray;
+        for (const ProtocolField& field : config.fields)
+        {
+            QJsonObject fieldObject;
+            fieldObject.insert(QStringLiteral("name"), field.name);
+            fieldObject.insert(QStringLiteral("hex"),
+                               QString::fromLatin1(field.pattern.toHex(' ').toUpper()));
+            fieldObject.insert(QStringLiteral("length"), field.length);
+            fieldObject.insert(QStringLiteral("color"), field.color.name(QColor::HexRgb));
+            fieldsArray.append(fieldObject);
+        }
+        configObject.insert(QStringLiteral("fields"), fieldsArray);
+        configsArray.append(configObject);
+    }
+
+    settings.setValue(QStringLiteral("protocol/configs"),
+                      QString::fromUtf8(QJsonDocument(configsArray).toJson(QJsonDocument::Compact)));
+    settings.setValue(QStringLiteral("protocol/activeIndex"),
+                      _protocolConfigComboBox == nullptr
+                          ? -1
+                          : _protocolConfigComboBox->currentData().toInt());
+}
+
+/*****************************************************
 函数名称：void MonitorPage::loadSettings()
 入口参数：无
 出口参数：无
@@ -941,10 +1795,14 @@ void MonitorPage::loadSettings()
         item.contentEdit->setText(settings.value(keyPrefix + QStringLiteral("content")).toString());
     }
 
+    loadProtocolSettings(settings);
+
     const int legacySendMode = settings.value(QStringLiteral("quickSend/expanded"), false).toBool() ? 1 : 0;
     const int legacySidePanelPage = settings.value(QStringLiteral("layout/sendMode"), legacySendMode).toInt();
     const int sidePanelPage = qBound(
-        0, settings.value(QStringLiteral("layout/sidePanelPage"), legacySidePanelPage).toInt(), 2);
+        0,
+        settings.value(QStringLiteral("layout/sidePanelPage"), legacySidePanelPage).toInt(),
+        qMax(0, _sidePanelStackedWidget->count() - 1));
     _sidePanelPivot->setCurrentIndex(sidePanelPage);
     _sidePanelStackedWidget->setCurrentIndex(sidePanelPage);
     const QByteArray splitterState = settings.value(QStringLiteral("layout/contentSplitterV2")).toByteArray();
@@ -1003,6 +1861,7 @@ void MonitorPage::saveSettings()
         settings.setValue(keyPrefix + QStringLiteral("mode"), item.modeComboBox->currentData());
         settings.setValue(keyPrefix + QStringLiteral("content"), item.contentEdit->text());
     }
+    saveProtocolSettings(settings);
     settings.sync();
 }
 
@@ -1389,9 +2248,9 @@ void MonitorPage::handleFrameTimeoutEditingFinished()
 
 /*****************************************************
 函数名称：void MonitorPage::handleSidePanelPageChanged(int index)
-入口参数：index为右侧页面序号，0为单词发送，1为多字符串发送，2为报文搜索
+入口参数：index为右侧页面序号，0为单词发送，1为多字符串发送，2为报文搜索，3为协议解析
 出口参数：无
-函数功能：使用ElaPivot切换右侧共享空间显示的发送或报文搜索页面并保存选择
+函数功能：使用ElaPivot切换右侧共享空间显示的发送、报文搜索或协议解析页面并保存选择
 *****************************************************/
 void MonitorPage::handleSidePanelPageChanged(int index)
 {
@@ -2018,15 +2877,37 @@ void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
         {
             cursor.insertText(QStringLiteral("\n"), dataFormat);
         }
-        cursor.insertText(hexContent, hexFormat);
     }
-    else if (displayMode == 1)
-    {
-        cursor.insertText(hexContent, hexFormat);
-    }
-    else
+    else if (displayMode == 0)
     {
         cursor.insertText(textContent, dataFormat);
+    }
+
+    if (displayMode == 1 || displayMode == 2)
+    {
+        const QList<int> byteColors = computeProtocolByteColors(record.data);
+        bool hasProtocolMark = false;
+        for (const int fieldIndex : byteColors)
+        {
+            if (fieldIndex >= 0)
+            {
+                hasProtocolMark = true;
+                break;
+            }
+        }
+
+        if (hasProtocolMark)
+        {
+            insertHexTextWithByteColors(cursor,
+                                        record.data,
+                                        byteColors,
+                                        activeProtocolFieldColors(),
+                                        hexFormat);
+        }
+        else
+        {
+            cursor.insertText(hexContent, hexFormat);
+        }
     }
 
     cursor.setCharFormat(defaultFormat);

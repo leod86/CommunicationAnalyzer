@@ -59,6 +59,8 @@ qt_add_executable(CommunicationAnalyzer
     src/pages/SettingPage.h
     src/update/UpdateManager.cpp
     src/update/UpdateManager.h
+    src/widgets/ColorSwatchButton.cpp
+    src/widgets/ColorSwatchButton.h
     src/widgets/ComboBoxWheelGuard.cpp
     src/widgets/ComboBoxWheelGuard.h
     src/widgets/TrafficTextEdit.cpp
