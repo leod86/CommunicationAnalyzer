@@ -5,6 +5,7 @@
 
 class AboutPage;
 class MonitorPage;
+class RtcmPage;
 class SerialController;
 class SettingPage;
 
@@ -25,10 +26,12 @@ private:
     void initializeConnections();
 
     MonitorPage* _monitorPage{nullptr};
+    RtcmPage* _rtcmPage{nullptr};
     SettingPage* _settingPage{nullptr};
     AboutPage* _aboutPage{nullptr};
     SerialController* _serialController{nullptr};
     QString _monitorPageKey;
+    QString _rtcmPageKey;
     QString _settingPageKey;
     QString _aboutPageKey;
 };

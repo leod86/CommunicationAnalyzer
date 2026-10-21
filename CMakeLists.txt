@@ -57,6 +57,10 @@ qt_add_executable(CommunicationAnalyzer
     src/pages/MonitorPage.h
     src/pages/SettingPage.cpp
     src/pages/SettingPage.h
+    src/pages/RtcmPage.cpp
+    src/pages/RtcmPage.h
+    src/protocol/Rtcm3Parser.cpp
+    src/protocol/Rtcm3Parser.h
     src/update/UpdateManager.cpp
     src/update/UpdateManager.h
     src/widgets/ColorSwatchButton.cpp

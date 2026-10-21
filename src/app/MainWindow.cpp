@@ -4,6 +4,7 @@
 #include "ElaToolBar.h"
 #include "pages/AboutPage.h"
 #include "pages/MonitorPage.h"
+#include "pages/RtcmPage.h"
 #include "pages/SettingPage.h"
 
 /*****************************************************
@@ -15,6 +16,7 @@
 MainWindow::MainWindow(QWidget* parent)
     : ElaWindow(parent)
     , _monitorPage(new MonitorPage(this))
+    , _rtcmPage(new RtcmPage(this))
     , _settingPage(new SettingPage(this))
     , _aboutPage(new AboutPage(this))
     , _serialController(new SerialController(this))
@@ -58,6 +60,8 @@ void MainWindow::initializeWindow()
     // 注册通讯监视页面和底部设置页面。
     addPageNode(QStringLiteral("串口监视"), _monitorPage, ElaIconType::Table);
     _monitorPageKey = _monitorPage->property("ElaPageKey").toString();
+    addPageNode(QStringLiteral("RTCM3 解析"), _rtcmPage, ElaIconType::Satellite);
+    _rtcmPageKey = _rtcmPage->property("ElaPageKey").toString();
     addFooterNode(QStringLiteral("设置"), _settingPage, _settingPageKey, 0, ElaIconType::Gear);
     addFooterNode(QStringLiteral("关于"), _aboutPage, _aboutPageKey, 0, ElaIconType::Circle);
     _settingPage->applySavedSettings();
@@ -95,9 +99,15 @@ void MainWindow::initializeConnections()
     connect(_serialController, &SerialController::errorOccurred,
             _monitorPage, &MonitorPage::showError);
 
-    // 仅在串口监视页面显示串口配置工具栏。
+    // 将原始字节与连接状态同步到 RTCM3 解析页面。
+    connect(_serialController, &SerialController::rawDataReceived,
+            _rtcmPage, &RtcmPage::appendRawData);
+    connect(_serialController, &SerialController::connectionStateChanged,
+            _rtcmPage, &RtcmPage::setConnectionState);
+
+    // 仅在串口监视与 RTCM3 解析页面显示串口配置工具栏。
     connect(this, &ElaWindow::navigationNodeClicked, this,
             [this](ElaNavigationType::NavigationNodeType, const QString& nodeKey) {
-        _monitorPage->serialToolBar()->setVisible(nodeKey == _monitorPageKey);
+        _monitorPage->serialToolBar()->setVisible(nodeKey == _monitorPageKey || nodeKey == _rtcmPageKey);
     });
 }
