@@ -316,6 +316,9 @@ void SerialController::handleReadyRead()
     }
     _receiveBuffer.append(receivedData);
 
+    // 立即转发原始字节，供 RTCM3 等协议页面自行做流同步。
+    emit rawDataReceived(receivedData);
+
     if (_receiveBuffer.size() >= kMaximumFrameBytes
         || _frameStartTimer.elapsed() >= kMaximumFrameAccumulationMilliseconds)
     {

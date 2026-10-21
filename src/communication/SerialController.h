@@ -50,6 +50,8 @@ signals:
     void connectionStateChanged(bool connected, const QString& description);
     // 通知界面显示接收数据。
     void dataReceived(const QByteArray& data);
+    // 通知界面接收原始字节，供协议解析使用。
+    void rawDataReceived(const QByteArray& data);
     // 通知界面显示已发送数据。
     void dataSent(const QByteArray& data);
     // 通知界面显示串口错误。

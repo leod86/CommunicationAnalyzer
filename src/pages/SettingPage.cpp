@@ -5,7 +5,6 @@
 #include "ElaScrollPageArea.h"
 #include "ElaText.h"
 #include "ElaTheme.h"
-#include "ElaToggleSwitch.h"
 #include "ElaWindow.h"
 
 #include <QHBoxLayout>
@@ -116,24 +115,6 @@ void SettingPage::buildUi()
     stackSwitchLayout->addStretch();
     stackSwitchLayout->addWidget(_stackSwitchModeComboBox);
     centralLayout->addWidget(stackSwitchArea);
-
-    auto* mcpTitle = new ElaText(QStringLiteral("AI 接入"), centralWidget);
-    mcpTitle->setTextPixelSize(18);
-    centralLayout->addWidget(mcpTitle);
-
-    auto* mcpArea = new ElaScrollPageArea(centralWidget);
-    auto* mcpLayout = new QHBoxLayout(mcpArea);
-    auto* mcpText = new ElaText(QStringLiteral("串口 MCP 服务"), mcpArea);
-    mcpText->setTextPixelSize(15);
-    _mcpStatusText = new ElaText(QStringLiteral("MCP 已停止"), mcpArea);
-    _mcpStatusText->setTextPixelSize(13);
-    _mcpSwitch = new ElaToggleSwitch(mcpArea);
-    mcpLayout->addWidget(mcpText);
-    mcpLayout->addStretch();
-    mcpLayout->addWidget(_mcpStatusText);
-    mcpLayout->addSpacing(12);
-    mcpLayout->addWidget(_mcpSwitch);
-    centralLayout->addWidget(mcpArea);
     centralLayout->addStretch();
 
     connect(_themeComboBox, qOverload<int>(&ElaComboBox::currentIndexChanged), this, [this](int) {
@@ -175,10 +156,6 @@ void SettingPage::buildUi()
             _windowDisplayModeComboBox->setCurrentIndex(index);
         }
     });
-    connect(_mcpSwitch, &ElaToggleSwitch::toggled, this, [this](bool enabled) {
-        saveSetting(QStringLiteral("mcp/enabled"), enabled);
-        emit mcpEnabledChanged(enabled);
-    });
 
     addCentralWidget(centralWidget, true, true, 0);
 }
@@ -200,7 +177,6 @@ void SettingPage::applySavedSettings()
         QStringLiteral("appearance/navigationMode"), static_cast<int>(ElaNavigationType::Auto)).toInt();
     const int stackSwitchValue = settings.value(
         QStringLiteral("appearance/stackSwitchMode"), static_cast<int>(ElaWindowType::Popup)).toInt();
-    const bool mcpEnabledValue = settings.value(QStringLiteral("mcp/enabled"), false).toBool();
 
     const auto restoreComboBox = [](ElaComboBox* comboBox, int value) {
         const QSignalBlocker blocker(comboBox);
@@ -214,10 +190,6 @@ void SettingPage::applySavedSettings()
     restoreComboBox(_windowDisplayModeComboBox, windowDisplayValue);
     restoreComboBox(_navigationModeComboBox, navigationValue);
     restoreComboBox(_stackSwitchModeComboBox, stackSwitchValue);
-    {
-        const QSignalBlocker blocker(_mcpSwitch);
-        _mcpSwitch->setIsToggled(mcpEnabledValue);
-    }
 
     eTheme->setThemeMode(static_cast<ElaThemeType::ThemeMode>(_themeComboBox->currentData().toInt()));
     eApp->setWindowDisplayMode(static_cast<ElaApplicationType::WindowDisplayMode>(
@@ -226,49 +198,6 @@ void SettingPage::applySavedSettings()
         _navigationModeComboBox->currentData().toInt()));
     _window->setStackSwitchMode(static_cast<ElaWindowType::StackSwitchMode>(
         _stackSwitchModeComboBox->currentData().toInt()));
-}
-
-/*****************************************************
-函数名称：bool SettingPage::mcpEnabled() const
-入口参数：无
-出口参数：串口 MCP 服务开关状态
-函数功能：返回设置页当前保存的 MCP 启用状态
-*****************************************************/
-bool SettingPage::mcpEnabled() const
-{
-    return _mcpSwitch->getIsToggled();
-}
-
-/*****************************************************
-函数名称：void SettingPage::setMcpEnabled(bool enabled)
-入口参数：enabled为目标开关状态
-出口参数：无
-函数功能：同步并保存 MCP 服务开关状态
-*****************************************************/
-void SettingPage::setMcpEnabled(bool enabled)
-{
-    const QSignalBlocker blocker(_mcpSwitch);
-    _mcpSwitch->setIsToggled(enabled);
-    saveSetting(QStringLiteral("mcp/enabled"), enabled);
-}
-
-/*****************************************************
-函数名称：void SettingPage::setMcpServiceState(bool running, const QString& message)
-入口参数：running为服务状态，message为地址或错误信息
-出口参数：无
-函数功能：显示 MCP 运行状态并在启动失败时关闭开关
-*****************************************************/
-void SettingPage::setMcpServiceState(bool running, const QString& message)
-{
-    const bool stopped = message == QStringLiteral("MCP 已停止");
-    _mcpStatusText->setText(running
-        ? QStringLiteral("运行中")
-        : (stopped ? QStringLiteral("已停止") : QStringLiteral("启动失败")));
-    _mcpStatusText->setToolTip(message);
-    if (!running && _mcpSwitch->getIsToggled())
-    {
-        setMcpEnabled(false);
-    }
 }
 
 /*****************************************************
