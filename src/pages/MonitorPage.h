@@ -5,6 +5,7 @@
 #include <QColor>
 #include <QDateTime>
 #include <QList>
+#include <QStringDecoder>
 #include <QStringList>
 #include "ElaScrollPage.h"
 
@@ -205,11 +206,13 @@ private:
     // 追加并显示一条通讯记录。
     void appendTraffic(bool received, const QByteArray& data);
     // 使用不同背景样式向接收区插入一条通讯记录。
-    void appendFormattedTraffic(const TrafficRecord& record);
-    // 按当前编码选项生成与接收区一致的文本和HEX内容。
-    TrafficDisplayContent formatTrafficDisplayContent(const TrafficRecord& record) const;
+    void appendFormattedTraffic(const TrafficRecord& record, const TrafficDisplayContent& displayContent);
+    // 按当前编码选项生成与接收区一致的文本和HEX内容，UTF-8 跨帧字符由解码器续接。
+    TrafficDisplayContent formatTrafficDisplayContent(const TrafficRecord& record);
+    // 重置收发两个方向的 UTF-8 解码状态。
+    void resetTrafficTextDecoders();
     // 将通讯记录写入日志文件。
-    void writeLog(const TrafficRecord& record);
+    void writeLog(const TrafficRecord& record, const TrafficDisplayContent& displayContent);
     // 更新底部状态栏中当前鼠标选中文本的字符数量。
     void updateSelectionLength();
     // 根据连接状态启用或锁定硬件参数。
@@ -257,6 +260,8 @@ private:
     QTimer* _continuousSendTimer{nullptr};
     QTimer* _trafficSearchTimer{nullptr};
     QList<TrafficRecord> _trafficRecords;
+    QStringDecoder _rxTextDecoder{QStringDecoder::Utf8};
+    QStringDecoder _txTextDecoder{QStringDecoder::Utf8};
     QList<QuickSendItem> _quickSendItems;
     ElaComboBox* _protocolConfigComboBox{nullptr};
     ElaIconButton* _protocolAddConfigButton{nullptr};
