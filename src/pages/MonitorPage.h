@@ -211,6 +211,8 @@ private:
     TrafficDisplayContent formatTrafficDisplayContent(const TrafficRecord& record);
     // 重置收发两个方向的 UTF-8 解码状态。
     void resetTrafficTextDecoders();
+    // 接收区字符数超限时从头部裁剪旧记录。
+    void trimTrafficDocument();
     // 将通讯记录写入日志文件。
     void writeLog(const TrafficRecord& record, const TrafficDisplayContent& displayContent);
     // 更新底部状态栏中当前鼠标选中文本的字符数量。
@@ -260,6 +262,7 @@ private:
     QTimer* _continuousSendTimer{nullptr};
     QTimer* _trafficSearchTimer{nullptr};
     QList<TrafficRecord> _trafficRecords;
+    qsizetype _trafficRecordBytes{0};
     QStringDecoder _rxTextDecoder{QStringDecoder::Utf8};
     QStringDecoder _txTextDecoder{QStringDecoder::Utf8};
     QList<QuickSendItem> _quickSendItems;

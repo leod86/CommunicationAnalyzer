@@ -22,6 +22,21 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Ensure release version is new
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          $match = Select-String -Path CMakeLists.txt -Pattern 'project\(CommunicationAnalyzer VERSION ([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1
+          if (-not $match) {
+            throw 'Unable to read the project version from CMakeLists.txt.'
+          }
+          $version = $match.Matches.Groups[1].Value
+          git ls-remote --exit-code --tags origin "refs/tags/v$version" | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release v$version already exists. Bump the version in CMakeLists.txt before merging to main."
+          }
+          $global:LASTEXITCODE = 0
+
       - name: Initialize MSVC build environment
         uses: ilammy/msvc-dev-cmd@v1
 

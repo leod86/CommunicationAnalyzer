@@ -2345,6 +2345,7 @@ void MonitorPage::handleSendIntervalEditingFinished()
 void MonitorPage::clearTraffic()
 {
     _trafficRecords.clear();
+    _trafficRecordBytes = 0;
     resetTrafficTextDecoders();
     _trafficSearchResultsModel->clear();
     _nextTrafficSearchBlockId = 0;
@@ -2382,6 +2383,7 @@ void MonitorPage::renderTraffic()
         }
         appendFormattedTraffic(record, displayContent);
     }
+    trimTrafficDocument();
     _trafficView->setUpdatesEnabled(true);
     scrollBar->setValue((_pauseScrollButton->isChecked() || searchActive)
         ? qMin(lockedScrollPosition, scrollBar->maximum())
@@ -2797,9 +2799,15 @@ void MonitorPage::appendChecksum(QByteArray& data) const
 void MonitorPage::appendTraffic(bool received, const QByteArray& data)
 {
     const TrafficRecord record{received, QDateTime::currentDateTime(), data};
+    // 同时限制记录条数和总字节数，避免高速连续接收时内存持续增长。
+    constexpr qsizetype maximumRecordCount = 10000;
+    constexpr qsizetype maximumRecordBytes = 32 * 1024 * 1024;
     _trafficRecords.append(record);
-    if (_trafficRecords.size() > 10000)
+    _trafficRecordBytes += data.size();
+    while (_trafficRecords.size() > 1
+           && (_trafficRecords.size() > maximumRecordCount || _trafficRecordBytes > maximumRecordBytes))
     {
+        _trafficRecordBytes -= _trafficRecords.first().data.size();
         _trafficRecords.removeFirst();
     }
 
@@ -2812,6 +2820,7 @@ void MonitorPage::appendTraffic(bool received, const QByteArray& data)
         const int lockedScrollPosition = scrollBar->value();
         const bool searchActive = !_trafficSearchQuery.isEmpty();
         appendFormattedTraffic(record, displayContent);
+        trimTrafficDocument();
         scrollBar->setValue((_pauseScrollButton->isChecked() || searchActive)
             ? qMin(lockedScrollPosition, scrollBar->maximum())
             : scrollBar->maximum());
@@ -2948,6 +2957,38 @@ void MonitorPage::resetTrafficTextDecoders()
 {
     _rxTextDecoder.resetState();
     _txTextDecoder.resetState();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::trimTrafficDocument()
+入口参数：无
+出口参数：无
+函数功能：接收区字符数超过上限时从头部整块删除旧记录，限制显示内存
+*****************************************************/
+void MonitorPage::trimTrafficDocument()
+{
+    constexpr int maximumCharacters = 16 * 1024 * 1024;
+    QTextDocument* document = _trafficView->document();
+    if (document->characterCount() <= maximumCharacters)
+    {
+        return;
+    }
+
+    // 一次裁到上限的四分之三，避免每条新记录都触发删除。
+    const int removeUntil = document->characterCount() - maximumCharacters * 3 / 4;
+    QTextBlock lastRemovedBlock = document->begin();
+    while (lastRemovedBlock.next().isValid() && lastRemovedBlock.next().position() < removeUntil)
+    {
+        lastRemovedBlock = lastRemovedBlock.next();
+    }
+    if (!lastRemovedBlock.next().isValid())
+    {
+        return;
+    }
+
+    QTextCursor cursor(document);
+    cursor.setPosition(lastRemovedBlock.next().position(), QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
 }
 
 /*****************************************************
