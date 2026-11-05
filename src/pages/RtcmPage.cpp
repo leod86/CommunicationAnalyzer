@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QHash>
+#include <QSignalBlocker>
 #include <QItemSelectionModel>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -285,15 +286,19 @@ void RtcmPage::flushPendingFrames()
         const int excess = _frames.size() - kMaximumFrameRows;
         if (excess > 0)
         {
-            _frameModel->removeRows(0, excess);
+            // 裁剪期间屏蔽选择信号，避免缓存与表格尚未同步时按错位行号刷新详情。
+            const QSignalBlocker selectionBlocker(_frameTable->selectionModel());
             _frames.erase(_frames.begin(), _frames.begin() + excess);
+            _frameModel->removeRows(0, excess);
             if (_selectedFrameIndex >= 0)
             {
                 _selectedFrameIndex -= excess;
                 if (_selectedFrameIndex < 0)
                 {
+                    // 选中帧已被裁剪掉，清除选择并恢复自动跟随与未选中提示。
                     _selectedFrameIndex = -1;
-                    // 选中帧已被裁剪掉，恢复未选中提示。
+                    _frameTable->selectionModel()->clear();
+                    _autoFollow = true;
                     showFrameDetail(-1);
                 }
             }

@@ -1447,11 +1447,13 @@ QList<Rtcm3Frame> Rtcm3Parser::append(const QByteArray& data)
             break;
         }
 
+        // 帧头后 6 位为保留位，必须为 0，用于排除数据中的伪帧头。
+        const bool reservedBitsValid = (static_cast<quint8>(_buffer.at(1)) & 0xFC) == 0;
         const int payloadLength =
             ((static_cast<quint8>(_buffer.at(1)) & 0x03) << 8) | static_cast<quint8>(_buffer.at(2));
-        if (payloadLength < 2 || payloadLength > kMaximumPayloadLength)
+        if (!reservedBitsValid || payloadLength < 2 || payloadLength > kMaximumPayloadLength)
         {
-            // 长度非法，丢弃该帧头字节后继续同步。
+            // 保留位或长度非法，丢弃该帧头字节后继续同步。
             ++_droppedByteCount;
             _buffer.remove(0, 1);
             continue;
@@ -1467,7 +1469,6 @@ QList<Rtcm3Frame> Rtcm3Parser::append(const QByteArray& data)
         frame.timestamp = QDateTime::currentDateTime();
         frame.raw = _buffer.left(frameLength);
         frame.payloadLength = payloadLength;
-        _buffer.remove(0, frameLength);
 
         const QByteArray payload = frame.raw.mid(3, payloadLength);
         frame.messageNumber = (static_cast<quint8>(payload.at(0)) << 4) |
@@ -1484,11 +1485,15 @@ QList<Rtcm3Frame> Rtcm3Parser::append(const QByteArray& data)
         ++_frameCount;
         if (frame.crcValid)
         {
+            _buffer.remove(0, frameLength);
             decodePayload(frame);
         }
         else
         {
+            // CRC 失败可能是伪帧头，只丢弃帧头字节重新同步，避免吞掉其后的有效帧。
             ++_crcErrorCount;
+            ++_droppedByteCount;
+            _buffer.remove(0, 1);
             frame.summary = QStringLiteral("CRC 校验失败");
         }
         frames.append(frame);

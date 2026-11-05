@@ -14,7 +14,9 @@
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QProgressDialog>
+#include <QPushButton>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QWidget>
 #include <QDebug>
@@ -25,6 +27,9 @@ constexpr auto kInstallerAssetName = "CommunicationAnalyzer-x64.msi";
 constexpr auto kChecksumAssetName = "CommunicationAnalyzer-x64.msi.sha256";
 constexpr auto kRateLimitResetHeader = "X-RateLimit-Reset";
 constexpr int kMaxFailureBodyCharacters = 200;
+constexpr auto kSkippedVersionKey = "update/skippedVersion";
+// 与监视页共用的配置存储名称。
+constexpr auto kSettingsName = "CommunicationAnalyzer";
 
 /*****************************************************
 函数名称：QString summarizeFailureBody(const QByteArray& body)
@@ -307,8 +312,9 @@ void UpdateManager::handleLatestReleaseReply(QNetworkReply* reply)
         const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QString failureReason = describeNetworkFailure(reply, responseBody);
         reply->deleteLater();
-        qWarning().noquote() << "Update check failed:" << networkError << "HTTP" << httpStatus;
-        showUpdateError(QStringLiteral("无法检查更新。\n%1").arg(failureReason));
+        // 启动时自动检查失败只记录日志，避免离线或内网环境每次启动都弹窗。
+        qWarning().noquote() << "Update check failed:" << networkError << "HTTP" << httpStatus
+                             << failureReason;
         return;
     }
     reply->deleteLater();
@@ -317,7 +323,6 @@ void UpdateManager::handleLatestReleaseReply(QNetworkReply* reply)
     if (parseError.error != QJsonParseError::NoError || !document.isObject())
     {
         qWarning() << "Update release metadata is invalid";
-        showUpdateError(QStringLiteral("更新信息格式无效。"));
         return;
     }
 
@@ -343,13 +348,19 @@ void UpdateManager::handleLatestReleaseReply(QNetworkReply* reply)
         return;
     }
 
+    // 用户已选择跳过该版本时不再提示，更新的版本发布后照常提示。
+    if (QSettings(QString::fromLatin1(kSettingsName), QString::fromLatin1(kSettingsName))
+            .value(QString::fromLatin1(kSkippedVersionKey)).toString() == releaseVersion.toString())
+    {
+        return;
+    }
+
     const QJsonArray assets = release.value(QStringLiteral("assets")).toArray();
     const QUrl installerUrl = findAssetUrl(assets, QString::fromLatin1(kInstallerAssetName));
     const QUrl checksumUrl = findAssetUrl(assets, QString::fromLatin1(kChecksumAssetName));
     if (!installerUrl.isValid() || !checksumUrl.isValid())
     {
         qWarning() << "Update release does not contain the required MSI assets";
-        showUpdateError(QStringLiteral("最新版本缺少安装包或校验文件。"));
         return;
     }
 
@@ -481,7 +492,7 @@ void UpdateManager::handleInstallerFinished(QNetworkReply* reply)
 函数名称：void UpdateManager::showUpdateConfirmation()
 入口参数：无
 出口参数：无
-函数功能：询问用户是否下载并安装检测到的新版本
+函数功能：询问用户立即更新、跳过此版本或稍后提醒
 *****************************************************/
 void UpdateManager::showUpdateConfirmation()
 {
@@ -489,11 +500,21 @@ void UpdateManager::showUpdateConfirmation()
     const QString message = QStringLiteral("当前版本：v%1\n最新版本：v%2\n\n是否立即下载并安装更新？")
                                 .arg(QStringLiteral(COMMUNICATION_ANALYZER_VERSION),
                                      _availableVersion.toString());
-    const QMessageBox::StandardButton answer = QMessageBox::question(
-        _parentWindow, title, message, QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-    if (answer == QMessageBox::Yes)
+    QMessageBox messageBox(QMessageBox::Question, title, message, QMessageBox::NoButton, _parentWindow);
+    QPushButton* installButton = messageBox.addButton(QStringLiteral("立即更新"), QMessageBox::AcceptRole);
+    QPushButton* skipButton = messageBox.addButton(QStringLiteral("跳过此版本"), QMessageBox::DestructiveRole);
+    messageBox.addButton(QStringLiteral("稍后提醒"), QMessageBox::RejectRole);
+    messageBox.setDefaultButton(installButton);
+    messageBox.exec();
+
+    if (messageBox.clickedButton() == installButton)
     {
         requestChecksum(_checksumUrl);
+    }
+    else if (messageBox.clickedButton() == skipButton)
+    {
+        QSettings settings(QString::fromLatin1(kSettingsName), QString::fromLatin1(kSettingsName));
+        settings.setValue(QString::fromLatin1(kSkippedVersionKey), _availableVersion.toString());
     }
 }
 

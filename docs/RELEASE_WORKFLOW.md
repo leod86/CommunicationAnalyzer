@@ -14,6 +14,8 @@
 
 Release 工作流使用 `CMakeLists.txt` 中定义的应用程序版本。首次正式版为 `v1.1.1`；后续每次
 发布前，在 `dev` 分支递增 `project(CommunicationAnalyzer VERSION x.y.z)` 中的版本号。
+若 `vx.y.z` 标签已存在，`dev` 到 `main` 的 Pull Request 检查和 Release 工作流都会失败，
+避免用新构建覆盖已发布版本的安装包。
 
 - `CommunicationAnalyzer-x64.msi`
 - `CommunicationAnalyzer-x64.msi.sha256`

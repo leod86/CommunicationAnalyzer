@@ -11,6 +11,7 @@
 #include "ElaPushButton.h"
 #include "ElaScrollArea.h"
 #include "ElaText.h"
+#include "ElaTheme.h"
 #include "ElaToolBar.h"
 #include "ElaToggleButton.h"
 #include "ElaToolButton.h"
@@ -764,6 +765,11 @@ void MonitorPage::buildUi()
 
     _continuousSendTimer = new QTimer(this);
     connect(_continuousSendTimer, &QTimer::timeout, this, &MonitorPage::handleSendClicked);
+
+    // 主题切换后按新配色重绘已有记录。
+    connect(eTheme, &ElaTheme::themeModeChanged, this, [this](ElaThemeType::ThemeMode) {
+        renderTraffic();
+    });
 
     loadSettings();
     connectSettingsSignals();
@@ -2339,6 +2345,8 @@ void MonitorPage::handleSendIntervalEditingFinished()
 void MonitorPage::clearTraffic()
 {
     _trafficRecords.clear();
+    _trafficRecordBytes = 0;
+    resetTrafficTextDecoders();
     _trafficSearchResultsModel->clear();
     _nextTrafficSearchBlockId = 0;
     _trafficView->clear();
@@ -2364,14 +2372,18 @@ void MonitorPage::renderTraffic()
     _nextTrafficSearchBlockId = 0;
     _trafficView->setUpdatesEnabled(false);
     _trafficView->clear();
+    resetTrafficTextDecoders();
     for (const TrafficRecord& record : _trafficRecords)
     {
+        // 隐藏方向的记录也要经过解码器，保持跨帧 UTF-8 状态连续。
+        const TrafficDisplayContent displayContent = formatTrafficDisplayContent(record);
         if ((record.received && !_rxButton->isChecked()) || (!record.received && !_txButton->isChecked()))
         {
             continue;
         }
-        appendFormattedTraffic(record);
+        appendFormattedTraffic(record, displayContent);
     }
+    trimTrafficDocument();
     _trafficView->setUpdatesEnabled(true);
     scrollBar->setValue((_pauseScrollButton->isChecked() || searchActive)
         ? qMin(lockedScrollPosition, scrollBar->maximum())
@@ -2423,7 +2435,8 @@ void MonitorPage::handleLogToggled(bool checked)
         QStringLiteral("yyyyMMdd_HHmmss_zzz.log"));
     _logFile->setFileName(QDir(directoryPath).filePath(logFileName));
 
-    if (!_logFile->open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+    // 不使用 Text 模式，避免数据中已有的 CRLF 被转换成 CR CR LF。
+    if (!_logFile->open(QIODevice::WriteOnly | QIODevice::Truncate))
     {
         const QSignalBlocker blocker(_logButton);
         _logButton->setChecked(false);
@@ -2548,7 +2561,9 @@ void MonitorPage::updateTrafficSearch()
 
             QTextEdit::ExtraSelection selection;
             selection.cursor = matchCursor;
-            selection.format.setBackground(QColor(QStringLiteral("#FFF2A8")));
+            selection.format.setBackground(eTheme->getThemeMode() == ElaThemeType::Dark
+                ? QColor(QStringLiteral("#6B5B00"))
+                : QColor(QStringLiteral("#FFF2A8")));
             highlightedSelections.append(selection);
         }
     }
@@ -2784,12 +2799,19 @@ void MonitorPage::appendChecksum(QByteArray& data) const
 void MonitorPage::appendTraffic(bool received, const QByteArray& data)
 {
     const TrafficRecord record{received, QDateTime::currentDateTime(), data};
+    // 同时限制记录条数和总字节数，避免高速连续接收时内存持续增长。
+    constexpr qsizetype maximumRecordCount = 10000;
+    constexpr qsizetype maximumRecordBytes = 32 * 1024 * 1024;
     _trafficRecords.append(record);
-    if (_trafficRecords.size() > 10000)
+    _trafficRecordBytes += data.size();
+    while (_trafficRecords.size() > 1
+           && (_trafficRecords.size() > maximumRecordCount || _trafficRecordBytes > maximumRecordBytes))
     {
+        _trafficRecordBytes -= _trafficRecords.first().data.size();
         _trafficRecords.removeFirst();
     }
 
+    const TrafficDisplayContent displayContent = formatTrafficDisplayContent(record);
     const bool displayReceived = received && _rxButton->isChecked();
     const bool displaySent = !received && _txButton->isChecked();
     if (displayReceived || displaySent)
@@ -2797,7 +2819,8 @@ void MonitorPage::appendTraffic(bool received, const QByteArray& data)
         QScrollBar* scrollBar = _trafficView->verticalScrollBar();
         const int lockedScrollPosition = scrollBar->value();
         const bool searchActive = !_trafficSearchQuery.isEmpty();
-        appendFormattedTraffic(record);
+        appendFormattedTraffic(record, displayContent);
+        trimTrafficDocument();
         scrollBar->setValue((_pauseScrollButton->isChecked() || searchActive)
             ? qMin(lockedScrollPosition, scrollBar->maximum())
             : scrollBar->maximum());
@@ -2807,34 +2830,34 @@ void MonitorPage::appendTraffic(bool received, const QByteArray& data)
         }
     }
 
+    // 日志记录全部收发数据，不受 RX/TX 显示过滤影响。
     if (_logButton->isChecked())
     {
-        if (displayReceived || displaySent)
-        {
-            writeLog(record);
-        }
+        writeLog(record, displayContent);
     }
 }
 
 /*****************************************************
-函数名称：void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
-入口参数：record为原始通讯记录
+函数名称：void MonitorPage::appendFormattedTraffic(const TrafficRecord& record, const TrafficDisplayContent& displayContent)
+入口参数：record为原始通讯记录，displayContent为已解码的文本和HEX内容
 出口参数：无
 函数功能：按普通、HEX或HEX对照模式插入一帧通讯数据
 *****************************************************/
-void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
+void MonitorPage::appendFormattedTraffic(const TrafficRecord& record, const TrafficDisplayContent& displayContent)
 {
-    const TrafficDisplayContent displayContent = formatTrafficDisplayContent(record);
     const QString& textContent = displayContent.text;
     const QString& hexContent = displayContent.hex;
 
     const QString timestamp = record.timestamp.toString(QStringLiteral("HH:mm:ss.zzz"));
 
+    const bool darkMode = eTheme->getThemeMode() == ElaThemeType::Dark;
+    const QColor textColor = _trafficView->palette().color(QPalette::Text);
+
     QTextCharFormat defaultFormat;
-    defaultFormat.setForeground(_trafficView->palette().color(QPalette::Text));
+    defaultFormat.setForeground(textColor);
 
     QTextCharFormat timeFormat;
-    timeFormat.setForeground(Qt::black);
+    timeFormat.setForeground(textColor);
     timeFormat.setFontWeight(QFont::DemiBold);
 
     QTextCharFormat directionFormat;
@@ -2844,10 +2867,10 @@ void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
     directionFormat.setFontWeight(QFont::Bold);
 
     QTextCharFormat dataFormat;
-    dataFormat.setForeground(Qt::black);
+    dataFormat.setForeground(textColor);
 
     QTextCharFormat hexFormat;
-    hexFormat.setForeground(QColor(QStringLiteral("#006400")));
+    hexFormat.setForeground(darkMode ? QColor(QStringLiteral("#7FD18B")) : QColor(QStringLiteral("#006400")));
     hexFormat.setFontWeight(QFont::DemiBold);
 
     QTextCursor cursor = _trafficView->textCursor();
@@ -2925,17 +2948,68 @@ void MonitorPage::appendFormattedTraffic(const TrafficRecord& record)
 }
 
 /*****************************************************
-函数名称：MonitorPage::TrafficDisplayContent MonitorPage::formatTrafficDisplayContent(const TrafficRecord& record) const
+函数名称：void MonitorPage::resetTrafficTextDecoders()
+入口参数：无
+出口参数：无
+函数功能：清除收发方向UTF-8解码器中残留的半个字符
+*****************************************************/
+void MonitorPage::resetTrafficTextDecoders()
+{
+    _rxTextDecoder.resetState();
+    _txTextDecoder.resetState();
+}
+
+/*****************************************************
+函数名称：void MonitorPage::trimTrafficDocument()
+入口参数：无
+出口参数：无
+函数功能：接收区字符数超过上限时从头部整块删除旧记录，限制显示内存
+*****************************************************/
+void MonitorPage::trimTrafficDocument()
+{
+    constexpr int maximumCharacters = 16 * 1024 * 1024;
+    QTextDocument* document = _trafficView->document();
+    if (document->characterCount() <= maximumCharacters)
+    {
+        return;
+    }
+
+    // 一次裁到上限的四分之三，避免每条新记录都触发删除。
+    const int removeUntil = document->characterCount() - maximumCharacters * 3 / 4;
+    QTextBlock lastRemovedBlock = document->begin();
+    while (lastRemovedBlock.next().isValid() && lastRemovedBlock.next().position() < removeUntil)
+    {
+        lastRemovedBlock = lastRemovedBlock.next();
+    }
+    if (!lastRemovedBlock.next().isValid())
+    {
+        return;
+    }
+
+    QTextCursor cursor(document);
+    cursor.setPosition(lastRemovedBlock.next().position(), QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+}
+
+/*****************************************************
+函数名称：MonitorPage::TrafficDisplayContent MonitorPage::formatTrafficDisplayContent(const TrafficRecord& record)
 入口参数：record为原始通讯记录
 出口参数：适用于文本和HEX显示的格式化内容
 函数功能：按当前UTF-8选项生成接收窗口和日志可共用的数据文本
 *****************************************************/
-MonitorPage::TrafficDisplayContent MonitorPage::formatTrafficDisplayContent(const TrafficRecord& record) const
+MonitorPage::TrafficDisplayContent MonitorPage::formatTrafficDisplayContent(const TrafficRecord& record)
 {
     TrafficDisplayContent displayContent;
-    displayContent.text = _utf8Button->isChecked()
-        ? QString::fromUtf8(record.data)
-        : QString::fromLatin1(record.data);
+    if (_utf8Button->isChecked())
+    {
+        // 按方向使用有状态解码器，被断帧切开的多字节字符在下一帧补齐后再显示。
+        QStringDecoder& decoder = record.received ? _rxTextDecoder : _txTextDecoder;
+        displayContent.text = decoder.decode(record.data);
+    }
+    else
+    {
+        displayContent.text = QString::fromLatin1(record.data);
+    }
     displayContent.hex = QString::fromLatin1(record.data.toHex(' ').toUpper());
 
     displayContent.text.replace(QChar(0x1B), QStringLiteral("\\x1B"));
@@ -2945,25 +3019,21 @@ MonitorPage::TrafficDisplayContent MonitorPage::formatTrafficDisplayContent(cons
 }
 
 /*****************************************************
-函数名称：void MonitorPage::writeLog(const TrafficRecord& record)
-入口参数：record为待记录通讯数据
+函数名称：void MonitorPage::writeLog(const TrafficRecord& record, const TrafficDisplayContent& displayContent)
+入口参数：record为待记录通讯数据，displayContent为已解码的文本和HEX内容
 出口参数：无
 函数功能：按当前接收区显示格式将时间、方向和数据写入日志文件
 *****************************************************/
-void MonitorPage::writeLog(const TrafficRecord& record)
+void MonitorPage::writeLog(const TrafficRecord& record, const TrafficDisplayContent& displayContent)
 {
     if (!_logFile || !_logFile->isOpen())
     {
         return;
     }
 
-    const TrafficDisplayContent displayContent = formatTrafficDisplayContent(record);
-    QString logContent;
-    if (_timeButton->isChecked())
-    {
-        logContent += QStringLiteral("[%1] ").arg(
-            record.timestamp.toString(QStringLiteral("HH:mm:ss.zzz")));
-    }
+    // 日志始终带时间戳，不随界面时间显示开关变化。
+    QString logContent = QStringLiteral("[%1] ").arg(
+        record.timestamp.toString(QStringLiteral("HH:mm:ss.zzz")));
     logContent += record.received ? QStringLiteral("[RX] ") : QStringLiteral("[TX] ");
 
     const int displayMode = _dataFormatComboBox->currentData().toInt();
@@ -2972,7 +3042,7 @@ void MonitorPage::writeLog(const TrafficRecord& record)
         logContent += displayContent.text;
         if (!displayContent.text.endsWith(QChar('\n')))
         {
-            logContent += QChar('\n');
+            logContent += QStringLiteral("\r\n");
         }
         logContent += displayContent.hex;
     }
@@ -2986,7 +3056,7 @@ void MonitorPage::writeLog(const TrafficRecord& record)
     }
 
     QTextStream stream(_logFile);
-    stream << logContent << '\n';
+    stream << logContent << "\r\n";
     stream.flush();
 }
 
