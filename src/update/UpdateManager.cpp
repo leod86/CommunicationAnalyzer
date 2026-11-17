@@ -18,6 +18,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QWidget>
 #include <QDebug>
 
@@ -26,10 +27,52 @@ namespace
 constexpr auto kInstallerAssetName = "CommunicationAnalyzer-x64.msi";
 constexpr auto kChecksumAssetName = "CommunicationAnalyzer-x64.msi.sha256";
 constexpr auto kRateLimitResetHeader = "X-RateLimit-Reset";
+constexpr auto kMirrorManifestName = "/latest.json";
+constexpr int kManifestTransferTimeoutMs = 15'000;
+constexpr int kInstallerTransferTimeoutMs = 30'000;
+constexpr int kMaxDownloadRetries = 5;
+// 断线重试的退避时间（秒），按重试次数依次取用。
+constexpr int kRetryDelaysSeconds[kMaxDownloadRetries] = {2, 4, 8, 16, 30};
 constexpr int kMaxFailureBodyCharacters = 200;
 constexpr auto kSkippedVersionKey = "update/skippedVersion";
 // 与监视页共用的配置存储名称。
 constexpr auto kSettingsName = "CommunicationAnalyzer";
+
+/*****************************************************
+函数名称：bool parseVersionText(const QString& text, QVersionNumber* version)
+入口参数：text为版本号文本（可带前缀v），version为解析结果输出
+出口参数：解析成功返回true，否则返回false
+函数功能：把 tag_name 或清单 version 字段统一解析为完整三段版本号
+*****************************************************/
+bool parseVersionText(const QString& text, QVersionNumber* version)
+{
+    QString versionText = text.trimmed();
+    if (versionText.startsWith(QLatin1Char('v'), Qt::CaseInsensitive))
+    {
+        versionText.remove(0, 1);
+    }
+    qsizetype parsedLength = 0;
+    const QVersionNumber parsed = QVersionNumber::fromString(versionText, &parsedLength);
+    if (parsedLength != versionText.size() || parsed.isNull())
+    {
+        return false;
+    }
+
+    *version = parsed;
+    return true;
+}
+
+/*****************************************************
+函数名称：bool isRetryableDownloadStatus(int httpStatus)
+入口参数：httpStatus为响应的 HTTP 状态码
+出口参数：该状态码是否属于可重试的临时故障
+函数功能：仅把 5xx、408 和 429 视为服务端临时故障
+*****************************************************/
+bool isRetryableDownloadStatus(int httpStatus)
+{
+    return httpStatus == 408 || httpStatus == 429
+           || (httpStatus >= 500 && httpStatus <= 599);
+}
 
 /*****************************************************
 函数名称：QString summarizeFailureBody(const QByteArray& body)
@@ -184,24 +227,117 @@ void UpdateManager::checkForUpdates()
     }
 
     _checkStarted = true;
-    requestLatestRelease();
+    requestMirrorManifest();
 }
 
 /*****************************************************
 函数名称：QNetworkRequest UpdateManager::createRequest(const QUrl& url) const
 入口参数：url 为 GitHub API 或发布资源地址
 出口参数：配置完成的网络请求
-函数功能：设置 GitHub API 所需请求头和安全重定向策略
+函数功能：设置请求头和安全重定向策略，GitHub 专用 Accept 头只对 api.github.com 添加
 *****************************************************/
 QNetworkRequest UpdateManager::createRequest(const QUrl& url) const
 {
     QNetworkRequest request(url);
-    request.setRawHeader("Accept", "application/vnd.github+json");
+    if (url.host().compare(QStringLiteral("api.github.com"), Qt::CaseInsensitive) == 0)
+    {
+        request.setRawHeader("Accept", "application/vnd.github+json");
+    }
     request.setRawHeader("User-Agent", "CommunicationAnalyzer/" COMMUNICATION_ANALYZER_VERSION);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                          QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setTransferTimeout(60'000);
     return request;
+}
+
+/*****************************************************
+函数名称：void UpdateManager::requestMirrorManifest()
+入口参数：无
+出口参数：无
+函数功能：优先请求 R2 镜像上的 latest.json 更新清单
+*****************************************************/
+void UpdateManager::requestMirrorManifest()
+{
+    QNetworkRequest request = createRequest(mirrorManifestUrl());
+    request.setTransferTimeout(kManifestTransferTimeoutMs);
+    QNetworkReply* reply = _networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        handleMirrorManifestReply(reply);
+    });
+}
+
+/*****************************************************
+函数名称：QUrl UpdateManager::mirrorManifestUrl() const
+入口参数：无
+出口参数：镜像清单 latest.json 的完整地址
+函数功能：拼接镜像基础地址与清单文件名
+*****************************************************/
+QUrl UpdateManager::mirrorManifestUrl() const
+{
+    return QUrl(QStringLiteral(COMMUNICATION_ANALYZER_UPDATE_MIRROR)
+                + QString::fromLatin1(kMirrorManifestName));
+}
+
+/*****************************************************
+函数名称：void UpdateManager::handleMirrorManifestReply(QNetworkReply* reply)
+入口参数：reply 为镜像 latest.json 响应
+出口参数：无
+函数功能：解析镜像清单，无效时回退 GitHub；版本不新时直接结束
+*****************************************************/
+void UpdateManager::handleMirrorManifestReply(QNetworkReply* reply)
+{
+    const QByteArray responseBody = reply->readAll();
+    const QNetworkReply::NetworkError networkError = reply->error();
+    const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    reply->deleteLater();
+
+    // 镜像不可用或内容无效只记录日志，不打扰用户，直接回退到 GitHub。
+    if (networkError != QNetworkReply::NoError)
+    {
+        qWarning().noquote() << "Update mirror request failed:" << networkError << "HTTP" << httpStatus;
+        requestLatestRelease();
+        return;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(responseBody, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject())
+    {
+        qWarning() << "Update mirror manifest is not a valid JSON object";
+        requestLatestRelease();
+        return;
+    }
+
+    const QJsonObject manifest = document.object();
+    const QString installerText = manifest.value(QStringLiteral("installer")).toString();
+    const QString checksumText = manifest.value(QStringLiteral("sha256")).toString().trimmed();
+    const QJsonValue sizeValue = manifest.value(QStringLiteral("size"));
+    QVersionNumber manifestVersion;
+    static const QRegularExpression checksumPattern(QStringLiteral("^[0-9a-fA-F]{64}$"));
+    const bool sizeValid = sizeValue.isUndefined()
+                           || (sizeValue.isDouble() && sizeValue.toDouble() > 0);
+    if (!parseVersionText(manifest.value(QStringLiteral("version")).toString(), &manifestVersion)
+        || installerText.isEmpty() || !sizeValid
+        || !checksumPattern.match(checksumText).hasMatch())
+    {
+        qWarning() << "Update mirror manifest has invalid fields";
+        requestLatestRelease();
+        return;
+    }
+
+    // installer 为相对路径，解析结果必须是 https 地址才允许下载。
+    const QUrl installerUrl = mirrorManifestUrl().resolved(QUrl(installerText));
+    if (installerUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) != 0
+        || installerUrl.host().isEmpty())
+    {
+        qWarning() << "Update mirror installer URL is not a valid https address";
+        requestLatestRelease();
+        return;
+    }
+
+    // 清单有效但版本不新或已被跳过时直接结束，不再查询 GitHub。
+    applyAvailableRelease(manifestVersion, installerUrl, QUrl(),
+                          checksumText.toLatin1().toLower());
 }
 
 /*****************************************************
@@ -212,6 +348,8 @@ QNetworkRequest UpdateManager::createRequest(const QUrl& url) const
 *****************************************************/
 void UpdateManager::requestLatestRelease()
 {
+    // 回退到 GitHub 时丢弃镜像清单带来的校验值，改由校验文件提供。
+    _expectedChecksum.clear();
     const QUrl releaseUrl(
         QStringLiteral("https://api.github.com/repos/")
         + QStringLiteral(COMMUNICATION_ANALYZER_UPDATE_REPOSITORY)
@@ -260,7 +398,7 @@ void UpdateManager::requestChecksum(const QUrl& checksumUrl)
 函数名称：void UpdateManager::requestInstaller(const QUrl& installerUrl)
 入口参数：installerUrl 为 MSI 安装包下载地址
 出口参数：无
-函数功能：创建临时 MSI 文件并开始异步下载
+函数功能：创建临时 .part 文件并开始异步下载，支持断点续传
 *****************************************************/
 void UpdateManager::requestInstaller(const QUrl& installerUrl)
 {
@@ -270,20 +408,59 @@ void UpdateManager::requestInstaller(const QUrl& installerUrl)
         return;
     }
 
+    _installerUrl = installerUrl;
     _downloadedInstallerPath = QDir(temporaryDirectory).filePath(
         QStringLiteral("CommunicationAnalyzer-%1-x64.msi").arg(_availableVersion.toString()));
+    _installerPartPath = _downloadedInstallerPath + QStringLiteral(".part");
     QFile::remove(_downloadedInstallerPath);
-    _installerFile.setFileName(_downloadedInstallerPath);
-    if (!_installerFile.open(QIODevice::WriteOnly))
+    // 新的下载任务总是从空的 .part 开始，续传只在同一次任务的重试之间发生。
+    QFile::remove(_installerPartPath);
+
+    _downloadCancelled = false;
+    _installerWriteFailed = false;
+    _installerWriteModeResolved = false;
+    _downloadRetryCount = 0;
+    _resumeOffset = 0;
+    ++_retryToken;
+
+    showDownloadProgress();
+    startInstallerDownload();
+}
+
+/*****************************************************
+函数名称：void UpdateManager::startInstallerDownload()
+入口参数：无
+出口参数：无
+函数功能：按 .part 已有字节数发起首次下载或带 Range 头的续传请求
+*****************************************************/
+void UpdateManager::startInstallerDownload()
+{
+    _installerWriteModeResolved = false;
+    const qint64 existingBytes = QFileInfo(_installerPartPath).size();
+    _resumeOffset = existingBytes > 0 ? existingBytes : 0;
+
+    _installerFile.setFileName(_installerPartPath);
+    // 续传时以 Append 方式打开，保证已下载字节不被覆盖。
+    const QIODevice::OpenMode openMode = _resumeOffset > 0
+                                             ? (QIODevice::WriteOnly | QIODevice::Append)
+                                             : (QIODevice::WriteOnly | QIODevice::Truncate);
+    if (!_installerFile.open(openMode))
     {
         discardInstaller();
+        closeDownloadProgress();
         showUpdateError(QStringLiteral("无法创建更新安装包的临时文件。"));
         return;
     }
 
-    _downloadCancelled = false;
-    showDownloadProgress();
-    QNetworkReply* reply = _networkManager->get(createRequest(installerUrl));
+    QNetworkRequest request = createRequest(_installerUrl);
+    request.setTransferTimeout(kInstallerTransferTimeoutMs);
+    if (_resumeOffset > 0)
+    {
+        request.setRawHeader("Range", QByteArrayLiteral("bytes=")
+                                            + QByteArray::number(_resumeOffset) + '-');
+    }
+
+    QNetworkReply* reply = _networkManager->get(request);
     _installerReply = reply;
     connect(reply, &QNetworkReply::readyRead, this, [this, reply]() {
         handleInstallerData(reply);
@@ -295,6 +472,91 @@ void UpdateManager::requestInstaller(const QUrl& installerUrl)
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         handleInstallerFinished(reply);
     });
+}
+
+/*****************************************************
+函数名称：bool UpdateManager::resolveInstallerResponseMode(int httpStatus)
+入口参数：httpStatus 为安装包下载响应的 HTTP 状态码
+出口参数：写入模式是否确定成功
+函数功能：206 继续追加，200 丢弃已有字节后从零写入
+*****************************************************/
+bool UpdateManager::resolveInstallerResponseMode(int httpStatus)
+{
+    if (httpStatus == 206)
+    {
+        // 服务器接受了 Range 请求，文件已以 Append 方式打开在续传起点。
+        _installerWriteModeResolved = true;
+        return true;
+    }
+
+    if (httpStatus == 200)
+    {
+        // 服务器忽略了 Range 请求，重新打开文件截断已有字节后从头写入。
+        _installerFile.close();
+        _installerFile.setFileName(_installerPartPath);
+        if (!_installerFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        {
+            _installerWriteFailed = true;
+            return false;
+        }
+        _resumeOffset = 0;
+        _installerWriteModeResolved = true;
+        return true;
+    }
+
+    return false;
+}
+
+/*****************************************************
+函数名称：bool UpdateManager::scheduleInstallerRetry()
+入口参数：无
+出口参数：返回是否已安排重试，次数用尽时返回 false
+函数功能：按 2/4/8/16/30 秒退避安排下一次下载，并在进度框提示重试信息
+*****************************************************/
+bool UpdateManager::scheduleInstallerRetry()
+{
+    if (_downloadRetryCount >= kMaxDownloadRetries)
+    {
+        return false;
+    }
+
+    const int delaySeconds = kRetryDelaysSeconds[_downloadRetryCount];
+    ++_downloadRetryCount;
+    const int token = ++_retryToken;
+
+    if (_downloadProgressDialog != nullptr)
+    {
+        _downloadProgressDialog->setRange(0, 0);
+        _downloadProgressDialog->setLabelText(
+            QStringLiteral("网络中断，%1 秒后第 %2 次重试…")
+                .arg(delaySeconds)
+                .arg(_downloadRetryCount));
+    }
+
+    // 取消下载或重新开始时会递增 _retryToken，使待执行的重试自动失效。
+    QTimer::singleShot(delaySeconds * 1000, this, [this, token]() {
+        if (_downloadCancelled || token != _retryToken)
+        {
+            return;
+        }
+        startInstallerDownload();
+    });
+    return true;
+}
+
+/*****************************************************
+函数名称：void UpdateManager::resetDownloadRetry()
+入口参数：无
+出口参数：无
+函数功能：复位断点续传与重试状态，并作废待执行的重试定时器
+*****************************************************/
+void UpdateManager::resetDownloadRetry()
+{
+    ++_retryToken;
+    _downloadRetryCount = 0;
+    _resumeOffset = 0;
+    _installerWriteModeResolved = false;
+    _installerWriteFailed = false;
 }
 
 /*****************************************************
@@ -333,24 +595,8 @@ void UpdateManager::handleLatestReleaseReply(QNetworkReply* reply)
         return;
     }
 
-    QString versionText = release.value(QStringLiteral("tag_name")).toString();
-    if (versionText.startsWith(QLatin1Char('v'), Qt::CaseInsensitive))
-    {
-        versionText.remove(0, 1);
-    }
-    qsizetype parsedLength = 0;
-    const QVersionNumber releaseVersion = QVersionNumber::fromString(versionText, &parsedLength);
-    const QVersionNumber currentVersion = QVersionNumber::fromString(
-        QStringLiteral(COMMUNICATION_ANALYZER_VERSION));
-    if (parsedLength != versionText.size() || releaseVersion.isNull()
-        || currentVersion.isNull() || QVersionNumber::compare(releaseVersion, currentVersion) <= 0)
-    {
-        return;
-    }
-
-    // 用户已选择跳过该版本时不再提示，更新的版本发布后照常提示。
-    if (QSettings(QString::fromLatin1(kSettingsName), QString::fromLatin1(kSettingsName))
-            .value(QString::fromLatin1(kSkippedVersionKey)).toString() == releaseVersion.toString())
+    QVersionNumber releaseVersion;
+    if (!parseVersionText(release.value(QStringLiteral("tag_name")).toString(), &releaseVersion))
     {
         return;
     }
@@ -364,10 +610,45 @@ void UpdateManager::handleLatestReleaseReply(QNetworkReply* reply)
         return;
     }
 
-    _availableVersion = releaseVersion;
+    // GitHub 路径不随清单下发校验值，稍后单独下载 SHA-256 文件。
+    applyAvailableRelease(releaseVersion, installerUrl, checksumUrl, QByteArray());
+}
+
+/*****************************************************
+函数名称：bool UpdateManager::applyAvailableRelease(const QVersionNumber& version,
+                                                     const QUrl& installerUrl,
+                                                     const QUrl& checksumUrl,
+                                                     const QByteArray& expectedChecksum)
+入口参数：version 为线上版本，installerUrl 为安装包地址，checksumUrl 为校验文件地址，
+          expectedChecksum 为清单直接下发的校验值（可为空）
+出口参数：返回是否已应用并弹出更新确认框
+函数功能：镜像清单与 GitHub Release 共用版本校验、跳过版本判断和新版本提示
+*****************************************************/
+bool UpdateManager::applyAvailableRelease(const QVersionNumber& version, const QUrl& installerUrl,
+                                          const QUrl& checksumUrl,
+                                          const QByteArray& expectedChecksum)
+{
+    const QVersionNumber currentVersion = QVersionNumber::fromString(
+        QStringLiteral(COMMUNICATION_ANALYZER_VERSION));
+    if (version.isNull() || currentVersion.isNull()
+        || QVersionNumber::compare(version, currentVersion) <= 0)
+    {
+        return false;
+    }
+
+    // 用户已选择跳过该版本时不再提示，更新的版本发布后照常提示。
+    if (QSettings(QString::fromLatin1(kSettingsName), QString::fromLatin1(kSettingsName))
+            .value(QString::fromLatin1(kSkippedVersionKey)).toString() == version.toString())
+    {
+        return false;
+    }
+
+    _availableVersion = version;
     _installerUrl = installerUrl;
     _checksumUrl = checksumUrl;
+    _expectedChecksum = expectedChecksum;
     showUpdateConfirmation();
+    return true;
 }
 
 /*****************************************************
@@ -408,15 +689,31 @@ void UpdateManager::handleChecksumReply(QNetworkReply* reply)
 函数名称：void UpdateManager::handleInstallerData(QNetworkReply* reply)
 入口参数：reply 为 MSI 下载响应
 出口参数：无
-函数功能：将收到的 MSI 数据写入临时文件
+函数功能：将收到的 MSI 数据写入临时 .part 文件，首次收到数据时确定写入模式
 *****************************************************/
 void UpdateManager::handleInstallerData(QNetworkReply* reply)
 {
+    if (!_installerWriteModeResolved)
+    {
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // 非 200/206 响应不写入文件，交由结束处理决定重试或报错。
+        if (httpStatus != 200 && httpStatus != 206)
+        {
+            reply->readAll();
+            return;
+        }
+        if (!resolveInstallerResponseMode(httpStatus))
+        {
+            reply->readAll();
+            return;
+        }
+    }
+
     const QByteArray data = reply->readAll();
     if (_installerFile.write(data) != data.size())
     {
+        _installerWriteFailed = true;
         reply->abort();
-        discardInstaller();
     }
 }
 
@@ -424,11 +721,12 @@ void UpdateManager::handleInstallerData(QNetworkReply* reply)
 函数名称：void UpdateManager::handleInstallerFinished(QNetworkReply* reply)
 入口参数：reply 为 MSI 下载响应
 出口参数：无
-函数功能：校验已下载 MSI 的 SHA-256，并在成功后执行更新
+函数功能：处理断线重试与断点续传，校验通过后重命名为最终安装包
 *****************************************************/
 void UpdateManager::handleInstallerFinished(QNetworkReply* reply)
 {
     const QNetworkReply::NetworkError networkError = reply->error();
+    const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     QByteArray responseBody;
     if (networkError == QNetworkReply::NoError)
     {
@@ -440,26 +738,69 @@ void UpdateManager::handleInstallerFinished(QNetworkReply* reply)
         // 失败时保留响应正文用于诊断，并避免把错误页面当作安装包写入临时文件。
         responseBody = reply->readAll();
     }
-    const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QString failureReason = (networkError == QNetworkReply::NoError)
                                       ? QString()
                                       : describeNetworkFailure(reply, responseBody);
     reply->deleteLater();
     _installerReply = nullptr;
     _installerFile.close();
-    if (networkError != QNetworkReply::NoError)
+
+    if (_installerWriteFailed)
     {
-        qWarning().noquote() << "Update installer download failed:" << networkError << "HTTP" << httpStatus;
+        qWarning() << "Failed to write the update installer temporary file";
         discardInstaller();
         closeDownloadProgress();
-        if (!_downloadCancelled)
-        {
-            showUpdateError(QStringLiteral("更新安装包下载失败。\n%1").arg(failureReason));
-        }
+        showUpdateError(QStringLiteral("写入更新安装包临时文件失败，已取消安装。"));
         return;
     }
 
-    QFile installer(_downloadedInstallerPath);
+    // 用户主动取消时不重试，直接清理临时文件。
+    if (_downloadCancelled)
+    {
+        discardInstaller();
+        closeDownloadProgress();
+        return;
+    }
+
+    if (networkError != QNetworkReply::NoError)
+    {
+        qWarning().noquote() << "Update installer download failed:" << networkError << "HTTP" << httpStatus;
+
+        // 服务器拒绝续传范围：删除 .part 后从 0 重下，并计入重试次数。
+        if (httpStatus == 416)
+        {
+            QFile::remove(_installerPartPath);
+            _resumeOffset = 0;
+            if (scheduleInstallerRetry())
+            {
+                return;
+            }
+        }
+        else
+        {
+            // 连接层错误（无 HTTP 状态码）或服务端临时故障才退避重试。
+            const bool retryable = (httpStatus == 0) || isRetryableDownloadStatus(httpStatus);
+            if (retryable && scheduleInstallerRetry())
+            {
+                return;
+            }
+        }
+
+        discardInstaller();
+        closeDownloadProgress();
+        showUpdateError(QStringLiteral("更新安装包下载失败。\n%1").arg(failureReason));
+        return;
+    }
+
+    if (!_installerWriteModeResolved && !resolveInstallerResponseMode(httpStatus))
+    {
+        discardInstaller();
+        closeDownloadProgress();
+        showUpdateError(QStringLiteral("更新安装包下载响应无效（HTTP %1）。").arg(httpStatus));
+        return;
+    }
+
+    QFile installer(_installerPartPath);
     if (!installer.open(QIODevice::ReadOnly))
     {
         discardInstaller();
@@ -484,6 +825,17 @@ void UpdateManager::handleInstallerFinished(QNetworkReply* reply)
         return;
     }
 
+    // 校验通过后才把 .part 重命名为最终安装包路径，失败则保留原状。
+    QFile::remove(_downloadedInstallerPath);
+    if (!QFile::rename(_installerPartPath, _downloadedInstallerPath))
+    {
+        discardInstaller();
+        closeDownloadProgress();
+        showUpdateError(QStringLiteral("无法保存已下载的更新安装包。"));
+        return;
+    }
+
+    resetDownloadRetry();
     closeDownloadProgress();
     installAndRestart();
 }
@@ -509,7 +861,15 @@ void UpdateManager::showUpdateConfirmation()
 
     if (messageBox.clickedButton() == installButton)
     {
-        requestChecksum(_checksumUrl);
+        // 镜像清单已直接下发校验值时跳过校验文件下载，GitHub 路径行为不变。
+        if (!_expectedChecksum.isEmpty())
+        {
+            requestInstaller(_installerUrl);
+        }
+        else
+        {
+            requestChecksum(_checksumUrl);
+        }
     }
     else if (messageBox.clickedButton() == skipButton)
     {
@@ -550,7 +910,7 @@ void UpdateManager::showDownloadProgress()
 函数名称：void UpdateManager::updateDownloadProgress(qint64 receivedBytes, qint64 totalBytes)
 入口参数：receivedBytes为已下载字节数，totalBytes为总字节数
 出口参数：无
-函数功能：根据网络下载进度更新进度条百分比和提示文本
+函数功能：按续传起点加本次进度更新进度条百分比和提示文本
 *****************************************************/
 void UpdateManager::updateDownloadProgress(qint64 receivedBytes, qint64 totalBytes)
 {
@@ -559,7 +919,10 @@ void UpdateManager::updateDownloadProgress(qint64 receivedBytes, qint64 totalByt
         return;
     }
 
-    const int percentage = static_cast<int>((receivedBytes * 100) / totalBytes);
+    // 续传时本次响应只包含剩余字节，需要叠加续传起点才能得到整体进度。
+    const qint64 receivedTotal = _resumeOffset + receivedBytes;
+    const qint64 byteTotal = _resumeOffset + totalBytes;
+    const int percentage = static_cast<int>((receivedTotal * 100) / byteTotal);
     _downloadProgressDialog->setRange(0, 100);
     _downloadProgressDialog->setValue(percentage);
     _downloadProgressDialog->setLabelText(
@@ -596,11 +959,12 @@ void UpdateManager::showUpdateError(const QString& message)
 函数名称：void UpdateManager::cancelDownload()
 入口参数：无
 出口参数：无
-函数功能：响应用户取消操作并中止当前安装包下载
+函数功能：响应用户取消操作，作废待执行的重试并中止当前安装包下载
 *****************************************************/
 void UpdateManager::cancelDownload()
 {
     _downloadCancelled = true;
+    resetDownloadRetry();
     if (_installerReply != nullptr)
     {
         _installerReply->abort();
@@ -684,7 +1048,7 @@ void UpdateManager::installAndRestart()
 函数名称：void UpdateManager::discardInstaller()
 入口参数：无
 出口参数：无
-函数功能：关闭并删除临时 MSI 安装包
+函数功能：关闭并删除临时 .part 文件及已下载的 MSI 安装包，并复位重试状态
 *****************************************************/
 void UpdateManager::discardInstaller()
 {
@@ -696,6 +1060,11 @@ void UpdateManager::discardInstaller()
     {
         QFile::remove(_downloadedInstallerPath);
     }
+    if (!_installerPartPath.isEmpty())
+    {
+        QFile::remove(_installerPartPath);
+    }
+    resetDownloadRetry();
 }
 
 /*****************************************************

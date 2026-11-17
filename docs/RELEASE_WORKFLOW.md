@@ -23,9 +23,21 @@ Release 工作流使用 `CMakeLists.txt` 中定义的应用程序版本。首次
 MSI 由 CPack 和 WiX Toolset v3 生成，并使用固定 Upgrade GUID。因此高版本 MSI 会覆盖旧版
 安装，而不会创建并列安装项。
 
+## 更新镜像（Cloudflare R2）
+
+Release 工作流在发布 GitHub Release 后，把安装包同步到 R2 存储桶 `communication-analyzer`，
+公开域名为 `https://update.iron.de5.net`（CMake 变量 `COMMUNICATION_ANALYZER_UPDATE_MIRROR`）：
+
+- `releases/vx.y.z/CommunicationAnalyzer-x64.msi` 与 `.sha256`
+- `latest.json`：`{version, installer, sha256, size}`，最后上传，`Cache-Control: no-cache`
+
+需要在仓库 Secrets 中配置 `R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`
+（R2 API Token，仅授予该存储桶的对象读写权限）；未配置时跳过镜像上传，只发布 GitHub Release。
+
 ## 启动更新
 
-仅从 MSI 安装目录运行的应用会自动检查更新。更新管理器调用 GitHub 最新稳定 Release API，
-比较版本后下载 MSI 和 SHA-256 文件；校验通过才会退出当前进程并启动独立安装脚本。脚本等待
+仅从 MSI 安装目录运行的应用会自动检查更新。更新管理器优先读取 R2 镜像的 `latest.json`，
+失败时回退到 GitHub 最新稳定 Release API；比较版本后下载 MSI（断线自动重试并按 HTTP Range
+续传）并校验 SHA-256；校验通过才会退出当前进程并启动独立安装脚本。脚本等待
 应用退出，调用 Windows Installer 完成升级，再启动新版本。每台设备安装的 MSI 需要用户接受
 Windows 的 UAC 授权请求。
