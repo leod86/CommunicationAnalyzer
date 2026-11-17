@@ -1,13 +1,16 @@
 cmake_minimum_required(VERSION 3.21)
 cmake_policy(SET CMP0087 NEW)
 
-project(CommunicationAnalyzer VERSION 1.1.9 LANGUAGES CXX)
+project(CommunicationAnalyzer VERSION 1.2.0 LANGUAGES CXX)
 
 set(COMMUNICATION_ANALYZER_VERSION "${PROJECT_VERSION}" CACHE STRING
     "Three-part version used by the application and the MSI package"
 )
 set(COMMUNICATION_ANALYZER_UPDATE_REPOSITORY "leod86/CommunicationAnalyzer" CACHE STRING
     "GitHub repository used by the release updater"
+)
+set(COMMUNICATION_ANALYZER_UPDATE_MIRROR "https://update.iron.de5.net" CACHE STRING
+    "R2 mirror base URL used by the release updater"
 )
 
 if(NOT COMMUNICATION_ANALYZER_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
@@ -82,6 +85,7 @@ target_link_libraries(CommunicationAnalyzer PRIVATE
 
 target_compile_definitions(CommunicationAnalyzer PRIVATE
     COMMUNICATION_ANALYZER_UPDATE_REPOSITORY="${COMMUNICATION_ANALYZER_UPDATE_REPOSITORY}"
+    COMMUNICATION_ANALYZER_UPDATE_MIRROR="${COMMUNICATION_ANALYZER_UPDATE_MIRROR}"
     COMMUNICATION_ANALYZER_VERSION="${COMMUNICATION_ANALYZER_VERSION}"
 )
 

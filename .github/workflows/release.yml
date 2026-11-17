@@ -76,6 +76,40 @@ jobs:
             artifact/CommunicationAnalyzer-x64.msi
             artifact/CommunicationAnalyzer-x64.msi.sha256
 
+      - name: Publish update mirror to Cloudflare R2
+        shell: pwsh
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_BUCKET: communication-analyzer
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:R2_ACCOUNT_ID) -or [string]::IsNullOrWhiteSpace($env:AWS_ACCESS_KEY_ID)) {
+            Write-Warning 'R2 secrets are not configured; skipping update mirror upload.'
+            exit 0
+          }
+          $endpoint = "https://$($env:R2_ACCOUNT_ID).r2.cloudflarestorage.com"
+          $prefix = "releases/v$($env:RELEASE_VERSION)"
+          $installer = Get-Item artifact/CommunicationAnalyzer-x64.msi
+          $checksum = (Get-Content -LiteralPath "$($installer.FullName).sha256" -Raw).Trim()
+          aws s3 cp $installer.FullName "s3://$($env:R2_BUCKET)/$prefix/CommunicationAnalyzer-x64.msi" --endpoint-url $endpoint --content-type application/x-msi --cache-control "public, max-age=31536000, immutable"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to upload MSI to R2.' }
+          aws s3 cp "$($installer.FullName).sha256" "s3://$($env:R2_BUCKET)/$prefix/CommunicationAnalyzer-x64.msi.sha256" --endpoint-url $endpoint --content-type text/plain --cache-control "public, max-age=31536000, immutable"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to upload checksum to R2.' }
+          # latest.json 最后上传，确保客户端看到新版本时安装包已经可下载。
+          $manifest = [ordered]@{
+            version   = $env:RELEASE_VERSION
+            installer = "$prefix/CommunicationAnalyzer-x64.msi"
+            sha256    = $checksum
+            size      = $installer.Length
+          } | ConvertTo-Json -Compress
+          Set-Content -LiteralPath artifact/latest.json -Value $manifest -NoNewline -Encoding utf8NoBOM
+          aws s3 cp artifact/latest.json "s3://$($env:R2_BUCKET)/latest.json" --endpoint-url $endpoint --content-type application/json --cache-control "no-cache"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to upload latest.json to R2.' }
+
       - name: Upload WiX diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

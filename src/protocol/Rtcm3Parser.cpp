@@ -165,6 +165,7 @@ struct FieldCollector
 {
     QList<Rtcm3Field>* fields{nullptr};  // 输出字段列表
     QString group;                       // 当前分组名称
+    int syncFlag{-1};                    // 同步/多消息标志，-1 表示该消息无此字段
 
     // 切换后续字段所属分组。
     void setGroup(const QString& name) { group = name; }
@@ -534,6 +535,7 @@ QString decodeGpsObservables(BitReader& reader, FieldCollector& out, int message
     out.add(QStringLiteral("基站 ID"), QString::number(stationId));
     out.add(QStringLiteral("历元时间 (TOW)"), QStringLiteral("%1 s").arg(formatNumber(tow, 3)));
     out.add(QStringLiteral("同步标志"), flagText(synchronousFlag));
+    out.syncFlag = int(synchronousFlag);
     out.add(QStringLiteral("卫星数"), QString::number(satelliteCount));
     out.add(QStringLiteral("平滑指示"), flagText(smoothingIndicator));
     out.add(QStringLiteral("平滑间隔（索引）"), QString::number(smoothingInterval));
@@ -601,6 +603,7 @@ QString decodeGlonassObservables(BitReader& reader, FieldCollector& out, int mes
     out.add(QStringLiteral("基站 ID"), QString::number(stationId));
     out.add(QStringLiteral("历元时间 (TOD)"), QStringLiteral("%1 s").arg(formatNumber(timeOfDay, 3)));
     out.add(QStringLiteral("同步标志"), flagText(synchronousFlag));
+    out.syncFlag = int(synchronousFlag);
     out.add(QStringLiteral("卫星数"), QString::number(satelliteCount));
     out.add(QStringLiteral("平滑指示"), flagText(smoothingIndicator));
     out.add(QStringLiteral("平滑间隔（索引）"), QString::number(smoothingInterval));
@@ -1179,6 +1182,7 @@ QString decodeMsm(BitReader& reader, FieldCollector& out, int messageNumber)
     out.add(QStringLiteral("基站 ID"), QString::number(stationId));
     out.add(QStringLiteral("历元时间"), epochText);
     out.add(QStringLiteral("多消息标志"), flagText(multipleMessage));
+    out.syncFlag = int(multipleMessage);
     out.add(QStringLiteral("IODS"), QString::number(iods));
     out.add(QStringLiteral("保留位"), QString::number(reserved));
     out.add(QStringLiteral("时钟转向指示"), QString::number(clockSteering));
@@ -1623,6 +1627,8 @@ void Rtcm3Parser::decodePayload(Rtcm3Frame& frame)
         }
         break;
     }
+
+    frame.syncFlag = out.syncFlag;
 
     if (frame.fields.isEmpty())
     {
