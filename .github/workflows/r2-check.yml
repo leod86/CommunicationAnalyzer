@@ -1,0 +1,34 @@
+name: Check R2 credentials
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Write, read and delete a probe object
+    runs-on: ubuntu-latest
+
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      R2_BUCKET: communication-analyzer
+
+    steps:
+      - name: Probe R2 bucket
+        run: |
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          key="ci-probe/${GITHUB_RUN_ID}.txt"
+          echo "probe ${GITHUB_RUN_ID}" > probe.txt
+          aws s3 cp probe.txt "s3://${R2_BUCKET}/${key}" --endpoint-url "$endpoint"
+          aws s3 cp "s3://${R2_BUCKET}/${key}" probe-back.txt --endpoint-url "$endpoint"
+          cmp probe.txt probe-back.txt
+          aws s3 rm "s3://${R2_BUCKET}/${key}" --endpoint-url "$endpoint"
+          echo "R2 credentials can write, read and delete objects in ${R2_BUCKET}."
