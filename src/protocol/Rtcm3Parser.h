@@ -25,6 +25,7 @@ struct Rtcm3Frame
     quint32 crcComputed{0};    // 本地计算的CRC-24Q
     quint32 crcReceived{0};    // 帧内携带的CRC-24Q
     bool crcValid{false};      // CRC校验是否通过
+    int syncFlag{-1};          // 观测量同步标志或 MSM 多消息标志，-1 表示该消息无此字段
     QString summary;           // 帧列表使用的摘要
     QList<Rtcm3Field> fields;  // 字段级解码结果
 };

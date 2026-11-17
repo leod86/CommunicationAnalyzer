@@ -4,16 +4,21 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QList>
+#include <QMap>
 #include <QString>
 
 #include "ElaScrollPage.h"
 #include "protocol/Rtcm3Parser.h"
 
+class ElaPivot;
+class ElaScrollPageArea;
 class ElaTableView;
 class ElaText;
 class ElaToolButton;
 class ElaTreeView;
+class QFrame;
 class QStandardItemModel;
+class QStackedWidget;
 class QTimer;
 
 // RTCM3 解析页面：对当前串口的原始字节流做帧同步与常用消息解码。
@@ -37,20 +42,36 @@ private slots:
     void clearFrames();
     // 将待插入帧批量写入帧列表。
     void flushPendingFrames();
-    // 处理帧列表当前行变化。
+    // 处理帧流水当前行变化。
     void handleCurrentFrameChanged();
+    // 处理消息概览当前行变化。
+    void handleCurrentMessageChanged();
 
 private:
+    // 消息号的累计统计信息。
+    struct MessageStat
+    {
+        quint64 count{0};
+        quint64 crcErrorCount{0};
+        QDateTime firstTime;
+        QDateTime lastTime;
+        Rtcm3Frame latestFrame;
+    };
+
     // 构建页面布局。
     void buildUi();
     // 构建右侧详情面板。
     QWidget* buildDetailPanel();
     // 向帧列表插入一帧。
     void insertFrameRow(const Rtcm3Frame& frame);
+    // 更新或插入消息概览中的一行。
+    void updateMessageOverviewRow(int messageNumber);
+    // 刷新顶部统计卡片。
+    void refreshSummaryCards();
+    // 根据当前页签刷新详情来源。
+    void refreshCurrentDetail();
     // 展示指定帧的字段详情。
-    void showFrameDetail(int frameIndex);
-    // 刷新统计页签内容。
-    void refreshStatistics();
+    void showFrameDetail(const Rtcm3Frame* frame);
     // 刷新顶部状态文本。
     void refreshStatusText();
     // 获取当前显示帧序号对应的缓存下标。
@@ -59,19 +80,26 @@ private:
     Rtcm3Parser _parser;                       // RTCM3 字节流解析器
     QList<Rtcm3Frame> _frames;                 // 已展示帧缓存
     QList<Rtcm3Frame> _pendingFrames;          // 待插入帧列表的帧
+    QMap<int, MessageStat> _messageStats;      // 自清空起的消息累计统计
     QStandardItemModel* _frameModel{nullptr};  // 帧列表模型
     ElaTableView* _frameTable{nullptr};        // 帧列表
+    QStandardItemModel* _messageModel{nullptr}; // 消息概览模型
+    ElaTableView* _messageTable{nullptr};      // 消息概览表
     QStandardItemModel* _detailModel{nullptr}; // 字段详情模型
     ElaTreeView* _detailTree{nullptr};         // 字段详情树
-    ElaText* _statisticsText{nullptr};         // 统计文本
+    ElaText* _detailSubtitle{nullptr};         // 详情副标题
     ElaText* _statusText{nullptr};             // 状态文本
     ElaToolButton* _clearButton{nullptr};      // 清空按钮
+    QStackedWidget* _leftStack{nullptr};       // 左侧页签内容
+    QList<ElaText*> _summaryValues;            // 顶部统计卡片数值
     QTimer* _flushTimer{nullptr};              // 批量刷新定时器
     bool _connected{false};                    // 串口连接状态
     QString _connectionDescription;            // 串口连接描述
     quint64 _frameSequence{0};                 // 帧序号计数
     QDateTime _firstFrameTime;                 // 首帧时间，用于统计帧率
+    QDateTime _lastFrameTime;                  // 最新帧时间，用于统计帧率
     int _selectedFrameIndex{-1};               // 当前选中帧在缓存中的下标
+    int _selectedMessageNumber{-1};            // 当前选中消息号
     bool _autoFollow{true};                    // 是否自动跟随最新帧
 };
 
